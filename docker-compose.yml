@@ -1,0 +1,55 @@
+# Local development only. Production deploys backend/worker/frontend
+# separately (Railway + Vercel) per the Phase 1 design doc — this file
+# exists so the whole stack runs with one command on a dev machine.
+#
+# Scope per Task 1: backend + frontend + postgres only.
+# Redis and the worker service are added in the task that implements
+# document upload/processing, per "introduce new tech only when needed."
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: researchpilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/researchpilot
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    env_file:
+      - ./frontend/.env
+    ports:
+      - "5173:4173"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
