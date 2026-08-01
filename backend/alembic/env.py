@@ -18,9 +18,11 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.core.config import settings
 from app.db.session import Base
 
-# Import all models here so Base.metadata is fully populated before
-# autogenerate runs. Empty for now — Task 2+ will add:
-# from app.models import user, document, chunk, chat  # noqa: F401
+# Importing app.models populates Base.metadata with every model
+# (see app/models/__init__.py) before autogenerate runs. Every new
+# model gets added to that __init__.py, not here — this import never
+# needs to change again.
+from app import models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)
