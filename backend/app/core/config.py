@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     # Async SQLAlchemy URL, e.g. postgresql+asyncpg://user:pass@host:5432/db
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/researchpilot"
 
+    # --- Auth / JWT ---
+    # Must be overridden with a real secret in every non-development environment.
+    jwt_secret_key: str = "dev-secret-change-me"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 30
+
     # --- CORS ---
     # Comma-separated origins in the environment; parsed to a list here.
     cors_origins: str = "http://localhost:5173"

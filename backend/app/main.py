@@ -1,15 +1,14 @@
 """
 FastAPI application entrypoint.
 
-Task 1 scope: app factory, CORS, and the health router only.
-Later tasks register app.api.auth / app.api.documents / app.api.chat
-here — this file should stay this short even as the project grows;
-each router owns its own logic.
+App factory + CORS + router registration. Each router (health, auth, ...)
+owns its own logic — this file should stay this short even as more
+routers (documents, chat) are added in later tasks.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import health
+from app.api import auth, health
 from app.core.config import settings
 
 
@@ -29,6 +28,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router, prefix=settings.api_v1_prefix)
+    app.include_router(auth.router, prefix=settings.api_v1_prefix)
 
     return app
 
