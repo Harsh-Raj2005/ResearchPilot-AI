@@ -10,8 +10,11 @@ Built incrementally, one phase and one task at a time. See
 
 ## Current status
 
-**Phase 1, Task 1: project skeleton.** Auth, upload, and chat are not
-implemented yet — this is infrastructure only. See `CHANGELOG.md`.
+**Phase 1, Task 3A complete: authentication (backend + frontend) and
+the first protected-route dependency (`get_current_user`) are done.**
+Document upload, processing, and chat are not implemented yet — see
+`docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
+for the task-by-task history.
 
 ## Stack
 

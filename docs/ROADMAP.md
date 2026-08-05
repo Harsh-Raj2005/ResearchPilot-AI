@@ -13,4 +13,9 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
 ## Phase 1 task log
 
 - [x] Task 1 — Project skeleton
-- [ ] Task 2 — TBD (next: likely auth, per the design doc)
+- [x] Task 2.1 — Database foundation
+- [x] Task 2.2 — Authentication foundation (backend)
+- [x] Task 2.3 — Frontend authentication
+- [x] Task 3A — `get_current_user` protected-route dependency
+- [ ] Task 3B — Document management (backend) — plan approved, checkpointed, not yet implemented
+- [ ] Task 3C — Document management (frontend) — planned at a high level only
