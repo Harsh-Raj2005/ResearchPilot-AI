@@ -136,3 +136,39 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   DB) with a real signed-up user and token.
 - Deliberately scoped as an independent milestone, completed and
   approved before any Task 3B (document management) code began.
+
+### Task 3B — Checkpoint 1: Document data layer
+- Added `app/models/document.py`: `Document` model — `user_id` (FK →
+  `users.id`, `ON DELETE CASCADE`, indexed), `original_filename`
+  (`VARCHAR(255)`), `stored_filename` (`VARCHAR(64)`, unique),
+  `content_type` (`VARCHAR(100)`), `file_size_bytes` (`BIGINT`),
+  `storage_path` (`VARCHAR(500)`), plus `created_at`/`updated_at` via
+  `BaseModel`. No `status` column (see Task 3B planning — no async
+  pipeline exists yet).
+- Deliberately **no `relationship()`** on either `User` or `Document`
+  this checkpoint. Reason (documented in-code on the `user_id`
+  column): this project uses async SQLAlchemy throughout, where a
+  default (`lazy="select"`) relationship raises `MissingGreenlet` at
+  runtime if accessed outside an explicit `await` — a real footgun
+  for whoever first writes `current_user.documents` in a route
+  handler with no reason to expect it. Deferred to the checkpoint
+  that first has a real consumer, so the loading strategy
+  (`lazy="selectin"` or `AsyncAttrs.awaitable_attrs`) is chosen
+  deliberately rather than guessed at in a vacuum.
+- Generated, reviewed, and applied the `documents` table migration
+  (`23fed3dde01d_create_documents_table`).
+- Added `tests/test_document_model.py` — 5 model-level tests (no
+  HTTP, no service layer): insert/retrieve, timestamp
+  auto-population, `stored_filename` uniqueness, cascade delete on
+  owning user, `user_id` NOT NULL. 22/22 backend tests passing
+  overall (17 pre-existing + 5 new), zero regressions.
+- Verified against a real local Postgres instance (not just the test
+  DB): inserted/updated/queried a real row, confirmed the unique
+  constraint rejects a duplicate `stored_filename`, confirmed
+  `ON DELETE CASCADE` actually removes a document when its owning
+  user is deleted (checked directly via `psql`), and confirmed
+  `alembic downgrade -1` / `upgrade head` both apply cleanly.
+- Scope strictly limited to the data layer per the approved
+  checkpointed plan — no storage service, no upload endpoint, no API
+  route, no frontend change. `get_current_user` remains unconsumed by
+  any route.

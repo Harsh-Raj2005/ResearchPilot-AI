@@ -10,11 +10,12 @@ Built incrementally, one phase and one task at a time. See
 
 ## Current status
 
-**Phase 1, Task 3A complete: authentication (backend + frontend) and
-the first protected-route dependency (`get_current_user`) are done.**
-Document upload, processing, and chat are not implemented yet — see
-`docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
-for the task-by-task history.
+**Phase 1, Task 3B Checkpoint 1 complete: the `documents` table and
+`Document` model exist** (data layer only — no storage service,
+upload endpoint, or API route yet). Authentication (backend +
+frontend) and the `get_current_user` dependency (Task 3A) are done.
+See `docs/PROJECT_CONTEXT.md` for full current state and
+`CHANGELOG.md` for the task-by-task history.
 
 ## Stack
 
