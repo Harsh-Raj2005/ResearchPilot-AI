@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time (e.g. "Month 1: built citation-aware RAG chat" → "Month 2: added multi-document reasoning and literature review generation" → "Month 3: knowledge graph and research-gap detection"). The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Within Phase 1: authentication is complete (signup + login, backend and frontend), the first protected-route dependency (`get_current_user`) is implemented and tested (Task 3A) — not yet consumed by any route — and the document data layer (the `documents` table and `Document` model) now exists (Task 3B Checkpoint 1). Nothing reads or writes a document row outside tests yet — no storage service, no upload endpoint, no API route (Task 3B Checkpoints 2–4, next up, plan already approved). Nothing has been deployed yet (no live Railway/Vercel URLs exist yet).
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Within Phase 1: authentication is complete (signup + login, backend and frontend), the first protected-route dependency (`get_current_user`) is implemented and tested (Task 3A) — not yet consumed by any route — the document data layer exists (Task 3B Checkpoint 1: `documents` table + `Document` model), and the storage service exists (Task 3B Checkpoint 2: local-disk save/delete, UUID filenames, extension validation). **No upload endpoint exists yet** — nothing HTTP-facing touches documents or storage; both are exercised only by tests so far. Task 3B Checkpoint 3 (the authenticated upload API, wiring `get_current_user` + `storage_service` + `Document` together) is next, plan already approved. Nothing has been deployed yet (no live Railway/Vercel URLs exist yet).
 
 ---
 
@@ -99,20 +99,22 @@ Log out and back in ──► document and chat history still there
      f. return answer (full response for Phase 1; streaming is a stretch goal, not a requirement)
 8. Frontend renders answer + "Source: page N" line(s) under it
 ```
+**Note:** the actual Task 3B implementation is synchronous (no `status`, no background worker) since Document Management explicitly excludes parsing — see Section 6.
 
 ### Features implemented so far
 1. **Email/username/password signup** — backend endpoint + frontend form, fully working and tested.
 2. **Login (JWT access token issuance)** — backend endpoint + frontend form, fully working and tested.
 3. **Frontend auth state** — React Context holds the access token and email, persisted to `localStorage`, with a login/logout-aware placeholder home page.
 4. **Health check endpoint** — real DB round-trip check (`SELECT 1`), returns 503 if DB unreachable.
-5. **`get_current_user` dependency** (`app/core/deps.py`) — the project's first protected-route wiring: verifies a bearer JWT via the existing `decode_access_token()`, loads the corresponding `User`, uniform 401 on any failure. Fully unit-tested (5 tests); **not yet consumed by any route** — Task 3B Checkpoint 3 (document endpoints) is the first real consumer.
-6. **Document data layer** (`app/models/document.py`, Task 3B Checkpoint 1) — the `documents` table and `Document` model: owner (FK to `users`, cascade-delete), original/stored filenames, content type, size, storage path, timestamps. **Schema only** — nothing populates this table outside tests yet; no storage service, no upload endpoint.
+5. **`get_current_user` dependency** (`app/core/deps.py`) — the project's first protected-route wiring: verifies a bearer JWT via the existing `decode_access_token()`, loads the corresponding `User`, uniform 401 on any failure. Fully unit-tested (5 tests); **not yet consumed by any route** — Task 3B Checkpoint 3 (upload endpoint) is the first real consumer.
+6. **Document data layer** (`app/models/document.py`, Task 3B Checkpoint 1) — the `documents` table and `Document` model: owner (FK to `users`, cascade-delete), original/stored filenames, content type, size, storage path, timestamps. Schema only — nothing populates it outside tests yet.
+7. **Storage service** (`app/services/storage_service.py`, Task 3B Checkpoint 2) — local-disk file save/delete: UUID-based stored filenames, extension allow-list validation, automatic upload-directory creation, idempotent delete, filesystem errors wrapped as a domain exception (`StorageError`). Decoupled from FastAPI's `UploadFile` (takes raw bytes) and from the database (no `Document`/session access) — pure file I/O, exercised only by its own unit tests so far.
 
 ### Features NOT yet implemented (in build order, per the Phase 1 design doc)
 - Any endpoint that actually *requires* a valid token — `get_current_user` exists but has zero consumers yet.
-- Storage service, actual file writes to disk (Task 3B Checkpoint 2).
-- PDF/DOCX/TXT upload endpoint (`POST /documents/upload`, max 20MB) (Task 3B Checkpoint 3).
-- Document list/detail/download/delete endpoints (Task 3B Checkpoint 3).
+- The authenticated document upload endpoint itself (`POST /documents/upload`) — this is where `get_current_user`, `storage_service`, and `Document` are first composed together (Task 3B Checkpoint 3).
+- A DB-touching `document_service.py` (create/list/get/delete `Document` rows) — doesn't exist yet; Checkpoint 3 is expected to introduce it (or fold equivalent logic directly into the route — a decision for that checkpoint's plan).
+- Document list/detail/download/delete endpoints beyond upload.
 - Background worker (Arq) for text extraction → chunking → embedding.
 - `document_chunks` table + pgvector column + similarity search.
 - Chat session + chat message models and endpoints.
@@ -138,6 +140,7 @@ Log out and back in ──► document and chat history still there
 | Qdrant vector DB | Phase 4+ | pgvector is sufficient at this scale |
 | Docker Compose for production | N/A | Compose is local-dev only; managed platforms handle prod |
 | Rate limiting, email verification, forgot password | Phase 12 | Security hardening after the core loop is proven |
+| `python-magic` deep content-sniffing for uploads | Phase 12 | Extension + declared Content-Type validation is the Phase-1-appropriate rigor level |
 
 ---
 
@@ -170,7 +173,15 @@ Log out and back in ──► document and chat history still there
 - **LLM provider:** Claude or OpenAI, switchable via `LLM_PROVIDER` env var (planned, not yet in `config.py`).
 
 ### Storage
-**Local disk for Phase 1** (`STORAGE_PATH`/`UPLOAD_DIR`, planned env var), with a storage abstraction so swapping to S3-compatible storage later doesn't touch calling code. **The `documents` table now exists (Task 3B Checkpoint 1) with the columns this design anticipates** (`stored_filename`, `storage_path`), but no storage service, upload endpoint, or actual file I/O exist yet — those are Checkpoint 2/3. Task 3B's approved plan uses UUID-based on-disk filenames (never the user's original filename) to avoid path-traversal risk, and treats local-disk durability across deploys as an accepted Phase-1 trade-off — a Railway persistent volume is a deployment-time follow-up, not a code change.
+**Local disk for Phase 1 — implemented as of Task 3B Checkpoint 2** (`app/services/storage_service.py`). Key implementation facts, all decided and verified during Checkpoint 2 (not just planned):
+- **Flat directory layout**: every file lives directly under `settings.upload_dir` (default `storage/uploads`, configurable via `UPLOAD_DIR`) as `<uuid4>.<extension>` — no per-user subdirectories. UUID filenames are already globally collision-proof, so nesting would add complexity without solving a real problem at this scale. (This was the directory-layout decision the Checkpoint 1 schema comments had flagged as "not yet made.")
+- **Stored filenames are UUID4 + the original extension**, never derived from the user-supplied filename — eliminates path-traversal risk entirely (no user input ever reaches a filesystem path) and guarantees no collisions, even between two uploads sharing an original filename.
+- **The original filename is preserved separately** (in `SavedFile.original_filename`, destined for `Document.original_filename`) — display-only, never used to construct a path.
+- **Extension-only validation** (`validate_extension`, against `settings.allowed_upload_extensions_list`, default `.pdf,.docx,.txt`) — matches the already-approved decision to skip `python-magic` content-sniffing for Phase 1. Validation happens *before* the upload directory is even created, so a rejected upload leaves zero filesystem footprint.
+- **`storage_path` records the actual path used at write time**, not recomputed from `stored_filename` + current config on every access — protects against a future `UPLOAD_DIR` change breaking resolution of files written under the old path.
+- **Deletes are idempotent**: deleting an already-missing file is treated as success, not an error, so a caller retrying a cleanup doesn't need to special-case "already gone." Genuine filesystem errors (permission denied, disk issues) still raise `StorageError`.
+- **Decoupled from both FastAPI's `UploadFile` and the database**: `save_file()` takes raw `bytes` + `original_filename` + `content_type` and returns a `SavedFile` dataclass whose fields match `Document`'s columns 1:1 — no HTTP or ORM dependency, so it's testable in isolation and reusable regardless of how bytes arrive.
+- A Railway persistent volume for production durability across deploys is a deployment-time follow-up, not a code change — already an accepted Phase-1 trade-off.
 
 ### Deployment (planned, nothing live yet)
 ```
@@ -213,9 +224,9 @@ httpx>=0.27.0
 ```
 Python `>=3.11` required (the shipped `.pyc` cache files show it's actually being run on 3.13 locally).
 
-**No new dependency was needed for Task 3B Checkpoint 1** — the `Document` model uses only SQLAlchemy types already in use for `User`.
+**No new dependency was needed for either Task 3B Checkpoint 1 or Checkpoint 2** — both use only what's already in `pyproject.toml` plus the Python standard library (`pathlib`, `uuid`, `dataclasses`).
 
-**Planned but not yet added:** `arq` (or `celery`), a Postgres driver for pgvector types, an embedding/LLM SDK (Anthropic or OpenAI Python SDK), `PyMuPDF`, `python-multipart` (needed for Task 3B Checkpoint 3's upload endpoint — not yet a dependency), a storage client if moving off local disk. **`python-magic` was considered for Task 3B and deliberately deferred** — extension + declared Content-Type validation only for now; deep content-byte sniffing revisited during the Phase 12 security-hardening pass.
+**Planned but not yet added:** `python-multipart` (needed the moment Task 3B Checkpoint 3's upload endpoint is added — FastAPI needs it for `UploadFile`/multipart form parsing), `arq` (or `celery`), a Postgres driver for pgvector types, an embedding/LLM SDK, `PyMuPDF`, a storage client if moving off local disk. `python-magic` deliberately deferred to Phase 12 (see Section 11 #18).
 
 ### Frontend (from `frontend/package.json` — actual)
 ```
@@ -237,16 +248,19 @@ Python `>=3.11` required (the shipped `.pyc` cache files show it's actually bein
 Linter is **oxlint**, not eslint. Note the `react-router-dom` pin: `npm audit` flagged a high-severity RSC-mode advisory in the latest version, but the app doesn't use RSC (plain client-side `BrowserRouter`), and pinning to an older version was tried and reverted because it reintroduced 13 other vulnerabilities — latest was judged the safer choice (documented in `CHANGELOG.md`).
 
 ### Database
-PostgreSQL 16 via the `pgvector/pgvector:pg16` Docker image (already wired in `docker-compose.yml`). **Two tables now exist: `users` and `documents`** — no model in the codebase yet uses the `vector` type.
+PostgreSQL 16 via the `pgvector/pgvector:pg16` Docker image (already wired in `docker-compose.yml`). Two tables exist: `users` and `documents` — no model in the codebase yet uses the `vector` type.
 
 ### Authentication
-`bcrypt` (direct library, not `passlib`) for password hashing; `pyjwt` (not `python-jose`) for JWT encode/decode. `email-validator` is a dependency purely because Pydantic's `EmailStr` needs it at runtime (this wasn't in the original plan — it was flagged and added during implementation, per `CHANGELOG.md`). `get_current_user` (Task 3A) added no new dependency — built entirely on `fastapi.security.HTTPBearer` and the already-present `pyjwt`.
+`bcrypt` (direct library, not `passlib`) for password hashing; `pyjwt` (not `python-jose`) for JWT encode/decode. `email-validator` is a dependency purely because Pydantic's `EmailStr` needs it at runtime. `get_current_user` (Task 3A) added no new dependency.
 
 ### ORM
-SQLAlchemy 2.0 (async, via `asyncpg`), using the modern `Mapped`/`mapped_column` typed-declarative style throughout. **`Document` (Task 3B Checkpoint 1) deliberately has no `relationship()` to `User`** — see Section 11 for the full reasoning (async SQLAlchemy's default lazy-loading raises `MissingGreenlet` outside an explicit `await`, and there's no consumer yet to pick the right loading strategy for).
+SQLAlchemy 2.0 (async, via `asyncpg`), using the modern `Mapped`/`mapped_column` typed-declarative style throughout. `Document` (Task 3B Checkpoint 1) deliberately has no `relationship()` to `User` — see Section 11 #19.
 
 ### Migrations
-Alembic, configured for **async** migrations (the standard `run_sync` bridge pattern — see `alembic/env.py`). Autogenerate discovery is centralized: every new model must be imported in `app/models/__init__.py`, and nowhere else — `alembic/env.py` never needs to change again as models are added. **Two migrations now exist**: `0618947abd34_create_users_table` and `23fed3dde01d_create_documents_table`.
+Alembic, configured for **async** migrations (the standard `run_sync` bridge pattern — see `alembic/env.py`). Two migrations exist: `0618947abd34_create_users_table` and `23fed3dde01d_create_documents_table`.
+
+### File storage
+**Implemented, local disk.** `app/services/storage_service.py` (Task 3B Checkpoint 2) — see the "Storage" subsection above for the complete implementation summary. Pure standard-library file I/O (`pathlib`), no third-party storage SDK.
 
 ### Caching / background jobs
 **Not wired up yet.** Planned: Redis + **Arq** (preferred over Celery for Phase 1, given FastAPI's async-first nature; Celery is the documented fallback if richer scheduling/retry semantics are needed later).
@@ -255,7 +269,7 @@ Alembic, configured for **async** migrations (the standard `run_sync` bridge pat
 Docker (multi-stage Dockerfiles already exist for both `backend/` and `frontend/`), Docker Compose for local dev only, GitHub Actions for CI (Postgres service + real `pytest` run since Task 2.2), Railway + Vercel as the intended deploy targets (not yet actually deployed).
 
 ### Environment management
-`pydantic-settings` (`app/core/config.py`) — the single source of truth for all env-driven configuration. **Rule enforced in the codebase's own docstring: no other module should read `os.environ` directly; everything imports `settings` from `app.core.config`.**
+`pydantic-settings` (`app/core/config.py`) — the single source of truth for all env-driven configuration. **Rule enforced in the codebase's own docstring: no other module should read `os.environ` directly; everything imports `settings` from `app.core.config`.** Now includes `upload_dir` and `allowed_upload_extensions` (Task 3B Checkpoint 2), following the same string-plus-derived-list-property pattern already used for `cors_origins`/`cors_origins_list`.
 
 ### AI stack
 Not implemented in code yet. Planned per the design docs: PyMuPDF for extraction, a to-be-chosen embedding API, pgvector for storage/retrieval, and direct Claude/OpenAI API calls (no LangChain/LlamaIndex in Phase 1).
@@ -299,7 +313,7 @@ researchpilot/
 │   │   │   └── health.py              # GET /health (real DB round-trip check)
 │   │   ├── core/
 │   │   │   ├── __init__.py
-│   │   │   ├── config.py              # pydantic-settings Settings + get_settings()
+│   │   │   ├── config.py              # Settings: app/db/jwt/cors + upload_dir/allowed_upload_extensions (Checkpoint 2)
 │   │   │   ├── security.py            # hash_password/verify_password, create/decode JWT
 │   │   │   └── deps.py                # get_current_user (Task 3A) — not yet consumed by any route
 │   │   ├── db/
@@ -315,7 +329,8 @@ researchpilot/
 │   │   │   └── auth.py                # SignupRequest, LoginRequest, UserPublic, TokenResponse
 │   │   ├── services/
 │   │   │   ├── __init__.py
-│   │   │   └── auth_service.py        # create_user, authenticate_user
+│   │   │   ├── auth_service.py        # create_user, authenticate_user
+│   │   │   └── storage_service.py     # save_file/delete_file (Task 3B Checkpoint 2) — pure file I/O, no DB/HTTP dependency
 │   │   └── workers/
 │   │       └── __init__.py            # empty — no worker tasks written yet
 │   ├── pyproject.toml
@@ -325,7 +340,8 @@ researchpilot/
 │       ├── conftest.py                # db_session + client fixtures, function-scoped engine
 │       ├── test_auth.py               # 12 tests: security unit tests + signup/login endpoint tests
 │       ├── test_deps.py               # 5 tests: get_current_user (Task 3A), called directly — no route exists yet
-│       └── test_document_model.py     # 5 tests: Document model (Task 3B Checkpoint 1), called directly — no service/route exists yet
+│       ├── test_document_model.py     # 5 tests: Document model (Task 3B Checkpoint 1), called directly — no service/route exists yet
+│       └── test_storage_service.py    # 18 tests: storage_service (Task 3B Checkpoint 2), file-system only, no DB fixtures needed
 └── frontend/
     ├── .env.example                   # VITE_API_BASE_URL only
     ├── Dockerfile                     # multi-stage: npm build → `serve` static runtime
@@ -355,23 +371,23 @@ researchpilot/
 ```
 
 ### Purpose of every major folder
-- **`backend/app/api/`** — HTTP routing layer only. Validates via Pydantic schemas (FastAPI does this automatically before the handler body runs), calls into `services/`, translates service-layer exceptions into HTTP status codes. **No business logic and no direct DB access belongs here.**
+- **`backend/app/api/`** — HTTP routing layer only. Validates via Pydantic schemas (FastAPI does this automatically before the handler body runs), calls into `services/`, translates service-layer exceptions into HTTP status codes. **No business logic and no direct DB access belongs here.** No document routes yet.
 - **`backend/app/core/`** — cross-cutting concerns: configuration (`config.py`), security primitives (`security.py`), and FastAPI dependencies (`deps.py`, added Task 3A). Nothing outside `core/` should touch `bcrypt`/`jwt`/`os.environ` directly.
 - **`backend/app/db/`** — the async SQLAlchemy engine, session factory, declarative `Base`, and the `get_db()` FastAPI dependency. This is infrastructure, not models.
-- **`backend/app/models/`** — SQLAlchemy ORM model definitions only (table shape). `__init__.py` here is the single required import point for Alembic autogenerate to see a model — this is enforced by convention, not by tooling, so it must be remembered when adding new models. **Now has `user.py` and `document.py`.**
-- **`backend/app/schemas/`** — Pydantic request/response contracts. Validation (e.g. password length, byte-limits) lives at this boundary so invalid requests are rejected before any service code runs. **No document schemas yet** — `DocumentResponse` is Task 3B Checkpoint 2 scope.
-- **`backend/app/services/`** — business logic. Routers call these; these never know about HTTP (no `Request`, no `HTTPException` inside a service — services raise their own domain exceptions that routers translate). **No document service yet** — Checkpoint 2 scope.
-- **`backend/app/workers/`** — background job definitions (Arq tasks). Currently empty; will hold `process_document`/`generate_embeddings`-style tasks.
+- **`backend/app/models/`** — SQLAlchemy ORM model definitions only (table shape). `__init__.py` here is the single required import point for Alembic autogenerate to see a model.
+- **`backend/app/schemas/`** — Pydantic request/response contracts. **No document schemas yet** — `DocumentResponse` (or equivalent) is expected as part of Task 3B Checkpoint 3.
+- **`backend/app/services/`** — business logic. Routers call these; these never know about HTTP. **Now has `auth_service.py` and `storage_service.py`.** `storage_service.py` is unusual among services in that it also has no DB dependency — it's pure file I/O, deliberately decoupled from both HTTP and the database so it's independently testable and reusable. **No DB-touching document service exists yet** — expected as part of Checkpoint 3 (or that logic may live directly in the route, a decision for that checkpoint).
+- **`backend/app/workers/`** — background job definitions (Arq tasks). Currently empty.
 - **`backend/alembic/`** — migration environment + generated migration scripts.
-- **`backend/tests/`** — pytest suite, run against a real Postgres test database (not mocked), full schema created/dropped per test via `Base.metadata.create_all`/`drop_all` rather than by running actual Alembic migrations (a deliberate speed-over-fidelity tradeoff, flagged as a known risk in the CHANGELOG).
+- **`backend/tests/`** — pytest suite, run against a real Postgres test database (not mocked) for DB-touching tests; `test_storage_service.py` needs no DB fixture at all since the service it tests has no DB dependency.
 - **`frontend/src/pages/`** — top-level routed views.
-- **`frontend/src/components/`** — reusable UI pieces (folder exists, currently empty — no components have been extracted out of pages yet).
-- **`frontend/src/context/` + `frontend/src/hooks/`** — deliberately split: the context module defines *what* the auth state is and *how* it's provided; the hook module defines *how it's consumed*. This split was a specific review-feedback decision (see `CHANGELOG.md` Task 2.3), intended to make each side easier to test in isolation later.
-- **`frontend/src/services/`** — the only layer allowed to call `fetch`. Pages and context never call `fetch` directly.
-- **`frontend/src/types/`** — TypeScript interfaces mirroring the backend's Pydantic schemas, kept in sync **by hand** (no shared codegen at this project's current scale — noted explicitly in the code as a scale-triggered thing to revisit).
-- **`docs/`** — the three living docs (`ARCHITECTURE.md`, `API.md`, `ROADMAP.md`), updated alongside the code as of Task 3A's documentation-as-part-of-the-milestone process.
+- **`frontend/src/components/`** — reusable UI pieces (folder exists, currently empty).
+- **`frontend/src/context/` + `frontend/src/hooks/`** — deliberately split: context defines *what* the auth state is and *how* it's provided; the hook defines *how it's consumed*.
+- **`frontend/src/services/`** — the only layer allowed to call `fetch`.
+- **`frontend/src/types/`** — TypeScript interfaces mirroring the backend's Pydantic schemas, kept in sync by hand.
+- **`docs/`** — the living docs (`ARCHITECTURE.md`, `API.md`, `ROADMAP.md`), updated alongside the code as of Task 3A's documentation-as-part-of-the-milestone process.
 
-Every later phase is meant to add files inside this existing structure (new `services/`, new `api/` routers, new frontend `pages/`) — **no reorganization is expected or wanted.**
+Every later phase is meant to add files inside this existing structure — **no reorganization is expected or wanted.**
 
 ---
 
@@ -389,28 +405,28 @@ Every later phase is meant to add files inside this existing structure (new `ser
 | `is_active` | BOOLEAN | default `true`, not null |
 | `is_superuser` | BOOLEAN | default `false`, not null |
 | `created_at` | TIMESTAMPTZ | server-generated via `func.now()`, not null |
-| `updated_at` | TIMESTAMPTZ | server-generated via `func.now()`, auto-refreshes via SQLAlchemy's ORM-level `onupdate` (confirmed in testing this does **not** fire on raw SQL updates — it's application-level, not a DB trigger; documented as a known limitation) |
+| `updated_at` | TIMESTAMPTZ | server-generated via `func.now()`, auto-refreshes via SQLAlchemy's ORM-level `onupdate` (confirmed this does **not** fire on raw SQL updates — application-level, not a DB trigger) |
 
-**Indexes:** unique indexes on `email` and `username` (`ix_users_email`, `ix_users_username`).
-**Why it exists:** the base of the auth system — every other table (`documents`, `chat_sessions`) FKs to it as the owner of the resource.
-**Note:** `username` exists in the actual schema even though the earlier Phase 0/Phase 1 design docs' schema sketch only listed `email`/`hashed_password` — username was added during implementation as a real, separate field, and the docs were never updated to reflect this (see Section 15).
+**Indexes:** unique indexes on `email` and `username`.
+**Note:** `username` exists in the actual schema even though the earlier Phase 0/Phase 1 design docs' schema sketch only listed `email`/`hashed_password` (see Section 15).
 
-#### `documents` — **implemented Task 3B Checkpoint 1**, migration `23fed3dde01d_create_documents_table`
+#### `documents` — implemented Task 3B Checkpoint 1, migration `23fed3dde01d_create_documents_table`
 | Column | Type | Constraints |
 |---|---|---|
-| `id` | UUID | primary key, default `uuid4()` (app-generated, same pattern as `User`) |
+| `id` | UUID | primary key, default `uuid4()` |
 | `user_id` | UUID | FK → `users.id`, `ON DELETE CASCADE`, indexed, not null |
-| `original_filename` | VARCHAR(255) | not null — display-only, never used to construct a filesystem path; 255 matches the filename-length ceiling most real filesystems (ext4, NTFS, APFS) enforce |
-| `stored_filename` | VARCHAR(64) | unique, not null — the on-disk filename the (not-yet-built) storage service will generate as a UUID4 + whitelisted extension (always exactly 41 characters); 64 is rounded up from that exact bound, tight enough to document the format contract |
+| `original_filename` | VARCHAR(255) | not null — display-only, never used to construct a filesystem path; 255 matches the filename-length ceiling most real filesystems enforce |
+| `stored_filename` | VARCHAR(64) | unique, not null — a UUID4 + whitelisted extension (always exactly 41 characters); 64 is generous headroom above that exact bound |
 | `content_type` | VARCHAR(100) | not null |
-| `file_size_bytes` | BIGINT | not null — `BIGINT` not `INTEGER`, trivial cost, avoids a future migration if the upload cap ever grows |
-| `storage_path` | VARCHAR(500) | not null — deliberately loose; the actual on-disk directory layout is a Checkpoint 2 decision, not yet made |
+| `file_size_bytes` | BIGINT | not null |
+| `storage_path` | VARCHAR(500) | not null — **now populated as designed**: `storage_service.save_file()` returns exactly this value, computed as `<upload_dir>/<stored_filename>` (flat layout, decided in Checkpoint 2) |
 | `created_at` / `updated_at` | TIMESTAMPTZ | via `BaseModel`, same DB-generated pattern as `User` |
 
-**Indexes:** `ix_documents_user_id` (non-unique, since "list this user's documents" filters on it every query); unique constraint on `stored_filename`.
-**No `status` column** — Document Management (Task 3B) has no async processing pipeline, so a status column would only ever read `"ready"`. Revisit when a real processing task (parsing) exists.
-**No `relationship()` to `User`, either direction.** This project uses async SQLAlchemy throughout, where a default (`lazy="select"`) `relationship()` raises `MissingGreenlet` at runtime if accessed outside an explicit `await` — a real footgun for whoever first writes `current_user.documents` in a route handler with no reason to expect it. Deferred to the checkpoint that first has a real consumer, so the loading strategy (`lazy="selectin"`, or `AsyncAttrs.awaitable_attrs`) gets chosen deliberately rather than guessed at with nothing to test it against. Explicit `select(Document).where(Document.user_id == ...)` queries are the correct pattern for "list a user's documents" regardless, so nothing is lost by deferring — additive to add later, no migration impact. Documented in-code on the `user_id` column in `document.py`.
-**Verified:** migration applies/rolls back/reapplies cleanly against real Postgres; unique constraint on `stored_filename` confirmed via a rejected duplicate insert; `ON DELETE CASCADE` confirmed via direct `psql` query after deleting the owning user.
+**Indexes:** `ix_documents_user_id` (non-unique); unique constraint on `stored_filename`.
+**No `status` column** — Document Management (Task 3B) has no async processing pipeline.
+**No `relationship()` to `User`, either direction** — see Section 11 #19 for the full async-SQLAlchemy `MissingGreenlet` reasoning.
+**Verified (Checkpoint 1):** migration applies/rolls back/reapplies cleanly; unique constraint on `stored_filename` confirmed via a rejected duplicate insert; `ON DELETE CASCADE` confirmed via direct `psql` query after deleting the owning user.
+**Still true as of Checkpoint 2:** no row in this table has been created by anything other than a test — `storage_service.save_file()` returns a `SavedFile` whose fields map 1:1 to these columns, but nothing yet constructs a `Document` from one. That composition is Checkpoint 3's job.
 
 ### Planned but NOT yet created
 
@@ -424,7 +440,7 @@ embedding     vector(1536)      -- pgvector column
 page_number   int nullable
 created_at    timestamptz
 ```
-Why: the retrieval unit for RAG — each row is a chunk of extracted text plus its embedding, queried via pgvector similarity search scoped to one `document_id`. **Out of scope for Task 3B** (Document Management explicitly excludes parsing/embeddings) — this arrives with the parsing/RAG task.
+Out of scope for Task 3B — arrives with the parsing/RAG task.
 
 #### `chat_sessions`
 ```
@@ -433,7 +449,6 @@ user_id       uuid fk -> users
 document_id   uuid fk -> documents
 created_at    timestamptz
 ```
-Why: one chat session per document per user in Phase 1 — created on first open, reused after (multiple sessions per document is explicitly a Phase-2+ nicety, not built now).
 
 #### `chat_messages`
 ```
@@ -444,11 +459,10 @@ content           text
 source_chunk_ids  uuid[] nullable
 created_at        timestamptz
 ```
-Why: persists chat history; `source_chunk_ids` is what powers the "Source: page N" citation line under assistant answers.
 
-**Relationships (planned):** `users 1—N documents` (FK exists, no ORM `relationship()` yet — see above), `documents 1—N document_chunks`, `users 1—N chat_sessions`, `documents 1—N chat_sessions` (practically 1—1 per user per document in Phase 1), `chat_sessions 1—N chat_messages`.
+**Relationships (planned):** `users 1—N documents` (FK exists, no ORM `relationship()` yet), `documents 1—N document_chunks`, `users 1—N chat_sessions`, `documents 1—N chat_sessions`, `chat_sessions 1—N chat_messages`.
 
-**All future queries must filter by `user_id` at the query level (not just hide things in the UI)** — this is an explicit requirement in the Phase 1 design doc §9: "All routes scoped so a user can only ever see their own documents." `get_current_user` (Task 3A) makes this enforceable; **Task 3B Checkpoint 2's document service is where this requirement actually gets implemented** — Checkpoint 1 only creates the `user_id` column, it doesn't yet enforce anything (no service or route exists to enforce it with).
+**All future queries must filter by `user_id` at the query level** — `get_current_user` (Task 3A) makes this enforceable; **it's still not actually enforced anywhere**, since no route or DB-touching document service exists yet. That's Checkpoint 3's job specifically.
 
 ---
 
@@ -456,54 +470,59 @@ Why: persists chat history; `source_chunk_ids` is what powers the "Source: page 
 
 ### Task 1 — Project skeleton
 **What it does:** Establishes the monorepo, the FastAPI app factory, the async DB engine/session, Alembic wired for async migrations, a real health-check endpoint, and the React/Vite/TS frontend scaffold with a health-check smoke-test screen. Docker Compose brings up postgres + backend + frontend together.
-**Key decisions:** `GET /api/v1/health` deliberately does a real `SELECT 1` DB round trip and returns 503 (not a fake always-200) if the DB is unreachable, so a deploy platform's health probe fails correctly instead of reporting false-healthy.
+**Key decisions:** `GET /api/v1/health` deliberately does a real `SELECT 1` DB round trip and returns 503 if the DB is unreachable.
 **Files:** `backend/app/main.py`, `backend/app/api/health.py`, `backend/app/db/session.py`, `backend/app/core/config.py`, `docker-compose.yml`, `frontend/src/*` scaffold.
 
 ### Task 2.1 — Database foundation
-**What it does:** Adds `TimestampMixin` and `BaseModel` (UUID PK + DB-generated timestamps) as the shared base every future model inherits from, and the `User` model (schema only, no auth logic). Wires `alembic/env.py` to import `app.models` once, so future models never require touching `env.py` again — only `app/models/__init__.py`.
-**Key decisions:** Timestamps are DB-generated via `func.now()` rather than Python-side `datetime.utcnow()`, so correctness doesn't depend on which code path performs the write or the app server's clock.
+**What it does:** Adds `TimestampMixin` and `BaseModel` (UUID PK + DB-generated timestamps), and the `User` model. Wires `alembic/env.py` to import `app.models` once.
 **Files:** `backend/app/models/base.py`, `backend/app/models/user.py`, `backend/app/models/__init__.py`, `backend/alembic/env.py`, `backend/alembic/versions/0618947abd34_create_users_table.py`.
-**Verified (per CHANGELOG):** migration applies and rolls back cleanly against a real local Postgres 16 instance; schema matches spec; `updated_at` auto-refresh confirmed to work via ORM writes and confirmed to **not** fire on raw SQL (documented limitation, not a bug).
 
 ### Task 2.2 — Authentication foundation (backend)
-**What it does:** Password hashing (`bcrypt` directly — not `passlib`), JWT access-token creation/decoding (`PyJWT`), the `SignupRequest`/`LoginRequest`/`UserPublic`/`TokenResponse` schemas, the `create_user`/`authenticate_user` service functions, and the `POST /auth/signup` / `POST /auth/login` routes. Also fixed the CI pipeline (Postgres service container, real `pytest` run instead of import-only) and completed `.env.example` with the JWT vars added to `config.py`.
-**Key decisions:**
-- Login failure returns the *same* error for "no such user," "wrong password," and "inactive user," so a failed login never reveals which case applied.
-- `authenticate_user` always performs a bcrypt comparison — even when no user is found, it checks the submitted password against a precomputed dummy hash (`_DUMMY_HASH` in `auth_service.py`) — specifically to avoid a timing side-channel that could reveal whether an email is registered.
-- Password length is validated at **both** the character level (`Field(min_length=8, max_length=72)`) and the UTF-8 byte level (`field_validator` in `schemas/auth.py`), because bcrypt has a hard 72-**byte** limit and multi-byte UTF-8 characters (e.g. `"é" * 72` = 144 bytes) can exceed it while staying under a 72-*character* count — this was caught as a real bug during manual testing (see Section 15) and fixed with an explicit validator plus a regression test.
-**Files:** `backend/app/core/security.py`, `backend/app/schemas/auth.py`, `backend/app/services/auth_service.py`, `backend/app/api/auth.py`, `backend/app/core/config.py` (added `jwt_secret_key`, `jwt_algorithm`, `jwt_access_token_expire_minutes`), `.github/workflows/ci.yml`, `backend/.env.example`.
-**Tests:** `backend/tests/conftest.py` + `backend/tests/test_auth.py` — 12 tests total (password hashing, JWT round-trip, tampered-token rejection, signup success/duplicate-email/duplicate-username/short-password/multibyte-overlong-password, login success/wrong-password/nonexistent-user). All verified against real code, not just written.
-**Two real bugs found and fixed during manual verification (documented in CHANGELOG, worth knowing about if similar patterns recur):**
-1. The test DB engine was originally created at module import time, causing "another operation is in progress" errors across tests — asyncpg connections are bound to the event loop they were opened in, and `pytest-asyncio` gives each test its own loop by default. Fixed by moving engine creation into a function-scoped fixture (see `conftest.py`).
-2. A 72-*character* multi-byte password passed schema validation but then raised an unhandled error inside `security.py`, surfacing as an unhandled 500. Fixed with the explicit byte-length validator described above.
+**What it does:** Password hashing (`bcrypt`), JWT access-token creation/decoding (`PyJWT`), auth schemas, `create_user`/`authenticate_user` services, `POST /auth/signup` / `POST /auth/login`. Fixed CI (Postgres service, real `pytest`).
+**Key decisions:** login failure identical across all failure cases; `authenticate_user` always performs a bcrypt comparison (dummy hash when no user found) to avoid a timing side-channel; password validated at both char and UTF-8 byte length (bcrypt's 72-byte limit).
+**Files:** `backend/app/core/security.py`, `backend/app/schemas/auth.py`, `backend/app/services/auth_service.py`, `backend/app/api/auth.py`, `backend/app/core/config.py`, `.github/workflows/ci.yml`, `backend/.env.example`.
+**Tests:** 12 tests.
+**Two real bugs found and fixed:** event-loop-bound test engine (fixed via function-scoped fixture); multi-byte-char password bypassing char-length check but exceeding bcrypt's byte limit (fixed via explicit byte-length validator).
 
 ### Task 2.3 — Frontend authentication
-**What it does:** `AuthContext`/`AuthProvider` (token + email state, persisted to `localStorage`), `useAuth()` hook, `LoginPage`/`SignupPage`, routing shell in `App.tsx` with an inline (not a separate temporary component) authenticated/unauthenticated placeholder at `/`, a `post<T>()` addition to the API client alongside the existing `get<T>()`, and shared error-message extraction that understands both FastAPI's `{detail: string}` and `{detail: [{msg}]}` (422 validation) response shapes.
-**Key decisions:**
-- Signup doesn't return a token (backend returns `UserPublic`, not `TokenResponse`), so `AuthContext.signup()` calls `login()` immediately after a successful signup with the same credentials — this reuses the existing login endpoint rather than adding new backend behavior, landing the user in an authenticated state at `/` as specified.
-- The `/` route placeholder is **inline inside `App.tsx`**, not a separate `HomePage.tsx` component — this was a specific review-feedback decision to avoid a temporary component that would just get deleted when the real dashboard arrives.
-- Access token (and the email used to obtain it) are persisted to `localStorage`. This is a **documented, accepted tradeoff** vs. httpOnly cookies — cookies would require backend changes that were out of scope for a frontend-only task. This is a real XSS-exposure tradeoff worth revisiting later (see Section 15).
-**Files:** `frontend/src/constants/routes.ts`, `frontend/src/types/auth.ts`, `frontend/src/services/auth.ts`, `frontend/src/context/AuthContext.tsx`, `frontend/src/hooks/useAuth.ts`, `frontend/src/pages/LoginPage.tsx`, `frontend/src/pages/SignupPage.tsx`, `frontend/src/App.tsx` (modified), `frontend/src/services/api.ts` (modified).
-**Verified with a real Chromium browser via Playwright** (not just unit logic): signup → auto-login → redirect to `/` with correct email shown and token in `localStorage`; logout clears state; re-login with same credentials works; wrong password shows "Invalid email or password" without crashing; duplicate-email signup shows "Email already registered" and stays on the signup page.
+**What it does:** `AuthContext`/`AuthProvider`, `useAuth()`, `LoginPage`/`SignupPage`, routing shell with an inline (not separate) placeholder at `/`, `post<T>()` added to the API client, shared error-message extraction.
+**Key decisions:** signup auto-logs-in via the existing login endpoint (backend never issues a token from signup); `/` placeholder inline in `App.tsx`, not a throwaway `HomePage.tsx`; JWT in `localStorage` (documented XSS trade-off).
+**Files:** `frontend/src/constants/routes.ts`, `frontend/src/types/auth.ts`, `frontend/src/services/auth.ts`, `frontend/src/context/AuthContext.tsx`, `frontend/src/hooks/useAuth.ts`, `frontend/src/pages/LoginPage.tsx`, `frontend/src/pages/SignupPage.tsx`, `frontend/src/App.tsx`, `frontend/src/services/api.ts`.
+**Verified with a real Chromium browser via Playwright.**
 
 ### Task 3A — `get_current_user` protected-route dependency
-**What it does:** Adds `app/core/deps.py` with `get_current_user()` — the project's first protected-route dependency. Extracts a bearer token via `HTTPBearer`, verifies it with the existing `decode_access_token()`, loads the `User` by the token's `sub` claim, and raises a uniform `401 Could not validate credentials` for every failure case (missing token, tampered/expired token, malformed subject claim, nonexistent user, inactive user) — deliberately matching `auth_service`'s pattern of never revealing which part of the chain failed.
-**Key decision:** `HTTPBearer`, not `OAuth2PasswordBearer`. `/auth/login` accepts a JSON body, not the OAuth2 password-flow's form-encoded `username`/`password` — `OAuth2PasswordBearer` would misrepresent that contract in the generated Swagger docs. Trade-off accepted: Swagger's "Authorize" dialog requires pasting a token manually rather than offering a friendlier login form.
-**Files:** `backend/app/core/deps.py` (new), `backend/tests/test_deps.py` (new). No other files touched — deliberately scoped as an independent milestone, completed before any document-management code.
-**Tests:** 5 new tests, called directly (no route exists yet to test it through) — valid token, tampered token, token for a nonexistent user, inactive user, malformed subject claim. All passing.
-**Verified beyond pytest:** booted the real app and confirmed `GET /api/v1/documents` returns 404 (not 401) — proof the dependency isn't accidentally wired into anything yet; manually invoked `get_current_user()` directly against the real dev database (not just the test DB) with a real signed-up user and a real generated token, confirmed correct resolution, cleaned up the test row.
-**Not yet done:** Not consumed by any route. `app/api/documents.py` (Task 3B Checkpoint 3) is the first consumer.
+**What it does:** `app/core/deps.py`'s `get_current_user()` — the project's first protected-route dependency. Extracts a bearer token via `HTTPBearer`, verifies via `decode_access_token()`, loads the `User`, uniform 401 on any failure.
+**Key decision:** `HTTPBearer`, not `OAuth2PasswordBearer` — `/auth/login`'s JSON-body contract doesn't match OAuth2's form-encoded assumption.
+**Files:** `backend/app/core/deps.py`, `backend/tests/test_deps.py`.
+**Tests:** 5 tests, called directly (no route exists yet to test it through).
+**Verified beyond pytest:** confirmed `GET /api/v1/documents` returns 404 not 401 (zero accidental footprint); manually invoked against the real dev DB with a real token.
+**Not yet done:** not consumed by any route.
 
 ### Task 3B — Checkpoint 1: Document data layer
-**What it does:** Adds `app/models/document.py` (`Document` model) and the migration that creates the `documents` table. Schema only — no storage service, no upload endpoint, no API route. See Section 6 for the full column table.
+**What it does:** `app/models/document.py` (`Document` model) and the migration creating the `documents` table. Schema only.
 **Key decisions:**
-- No `status` column — restated decision from Task 3B planning; no async processing pipeline exists yet.
-- No `relationship()` on either `User` or `Document` — deferred specifically because of async SQLAlchemy's `MissingGreenlet` risk with default lazy loading, and because there's no current consumer to pick the right loading strategy (`lazy="selectin"` vs. `AsyncAttrs.awaitable_attrs`) for. Documented in-code on the `user_id` column, per an explicit request to make the decision discoverable without needing chat history.
-- `stored_filename` tightened to `VARCHAR(64)` (computed: UUID4 + extension is always exactly 41 characters) rather than matching `original_filename`'s `VARCHAR(255)` — a self-documenting bound on a format the app fully controls. `original_filename` stays at 255 (derived from real filesystem filename-length limits). `storage_path` stays deliberately loose at `VARCHAR(500)` since the actual directory layout is a Checkpoint 2 decision not yet made.
-**Files:** `backend/app/models/document.py` (new), `backend/app/models/__init__.py` (modified), `backend/alembic/versions/23fed3dde01d_create_documents_table.py` (new), `backend/tests/test_document_model.py` (new).
-**Tests:** 5 new tests, called directly against the model (no service or route exists yet to test through) — insert/retrieve, timestamp auto-population, `stored_filename` uniqueness, cascade delete on owning user, `user_id` NOT NULL. 22/22 across the full suite, zero regressions.
-**Verified beyond pytest:** migration applied/rolled back/reapplied against a real local Postgres instance; `\d documents` confirmed every column/constraint/index/FK matches spec; manually inserted/updated a real row against the real dev DB; manually confirmed the unique constraint rejects a duplicate `stored_filename`; manually confirmed `ON DELETE CASCADE` actually removes a document via direct `psql` query after deleting its owning user.
-**Not yet done:** Nothing reads or writes a document row outside tests. Storage service, upload endpoint, list/detail/download/delete routes — all Checkpoints 2–3.
+- No `status` column — no async pipeline exists in Document Management's scope.
+- No `relationship()` on either `User` or `Document` — see Section 11 #19.
+- `stored_filename` tightened to `VARCHAR(64)` (computed: UUID4 + extension is always exactly 41 chars); `original_filename` stays at `VARCHAR(255)` (real filesystem limit); `storage_path` stays loose at `VARCHAR(500)` (directory layout not yet decided at that point).
+**Files:** `backend/app/models/document.py`, `backend/app/models/__init__.py`, `backend/alembic/versions/23fed3dde01d_create_documents_table.py`, `backend/tests/test_document_model.py`.
+**Tests:** 5 tests, called directly against the model — insert/retrieve, timestamp auto-population, `stored_filename` uniqueness, cascade delete, `user_id` NOT NULL.
+**Verified beyond pytest:** migration applied/rolled back/reapplied against real Postgres; `\d documents` confirmed schema; manually inserted/updated a real row; manually confirmed the unique constraint and `ON DELETE CASCADE` via direct `psql` queries.
+
+### Task 3B — Checkpoint 2: Storage service
+**What it does:** `app/services/storage_service.py` — local-disk file save/delete. `save_file()`, `delete_file()`, `validate_extension()`, `generate_stored_filename()`, `ensure_upload_dir_exists()`, the `SavedFile` result dataclass, and two domain exceptions (`UnsupportedFileTypeError`, `StorageError`).
+**Key decisions (all now made, not just planned):**
+- **Decoupled from FastAPI's `UploadFile` and from the database.** `save_file()` takes raw `bytes` + `original_filename` + `content_type`; no DB session, no `Document` import. Purely file I/O — testable and reusable independent of both the web layer and the ORM.
+- **`SavedFile`'s fields match `Document`'s columns 1:1** — deliberate, so a future document service (Checkpoint 3) can construct a `Document` from a `SavedFile` without renaming anything.
+- **Flat directory layout** (`<upload_dir>/<uuid>.<ext>`, no per-user subdirectories) — this was the directory-layout decision the Checkpoint 1 schema comments explicitly flagged as "not yet made"; now made, and documented here as the answer.
+- **UUID-based stored filenames**, never derived from user input — eliminates path-traversal risk entirely and guarantees no collisions, even between two uploads sharing an original filename (verified by a test).
+- **Extension-only validation** against `settings.allowed_upload_extensions_list` — matches the already-approved decision to skip `python-magic` for Phase 1. Validated *before* the upload directory is created, so a rejected upload leaves zero filesystem footprint (verified by a test).
+- **`storage_path` records the actual write-time path**, not recomputed from config on each access — protects against a future `UPLOAD_DIR` change breaking old files' resolution.
+- **Deletes are idempotent** — a missing file is success, not an error; genuine filesystem failures still raise `StorageError`.
+- **`max_upload_size_mb` was deliberately NOT added this checkpoint** — size enforcement more naturally belongs where the upload is first read (the endpoint layer, Checkpoint 3), not the storage layer, which just persists whatever bytes it's given.
+**Files:** `backend/app/services/storage_service.py`, `backend/app/core/config.py` (added `upload_dir`, `allowed_upload_extensions`, `allowed_upload_extensions_list`), `backend/tests/test_storage_service.py`.
+**Tests:** 18 tests — extension validation (accept/reject/case-insensitive/missing), stored-filename uniqueness, directory auto-creation and idempotency, save/read-back round-trip, no-collision on duplicate original filenames, rejection leaves no footprint, filesystem-error wrapping for both save and delete, delete idempotency.
+**Verified beyond pytest:** exercised against the real filesystem (not just pytest's `tmp_path` sandbox) using the real default `storage/uploads` directory — saved and deleted real files, confirmed automatic directory creation, confirmed no collision between two same-named uploads, confirmed idempotent delete, cleaned up afterward.
+**Not yet done:** nothing outside tests calls this service. No DB row is ever created from a `SavedFile` yet — that composition, plus the upload endpoint itself, is Checkpoint 3.
 
 ---
 
@@ -513,38 +532,29 @@ Why: persists chat history; `source_chunk_ids` is what powers the "Source: page 
 
 ### Signup
 1. Frontend `SignupPage` collects email, username, password → calls `useAuth().signup()`.
-2. `AuthContext.signup()` calls `authService.signup()` → `POST /api/v1/auth/signup` with `{ email, username, password }`.
-3. Backend validates via `SignupRequest` (Pydantic): email format (`EmailStr`), username 3–50 chars, password 8–72 chars **and** ≤72 UTF-8 bytes (custom validator).
-4. `auth.py` router calls `auth_service.create_user()`:
-   - Checks email uniqueness → raises `EmailAlreadyExistsError` → router returns `409` "Email already registered".
-   - Checks username uniqueness → raises `UsernameAlreadyExistsError` → router returns `409` "Username already taken".
-   - Hashes the password with `bcrypt.hashpw` (via `security.hash_password`, which itself raises `PasswordTooLongError` if the byte length check is somehow bypassed — defense in depth over the schema validator).
-   - Inserts the `User` row, commits, refreshes, returns the ORM object.
-5. Router returns `UserPublic` (id, email, username, is_active, created_at — **never** the hash) with `201 Created`.
-6. Frontend: `AuthContext.signup()` immediately calls `login()` with the same credentials (backend doesn't issue a token on signup) to land the user in an authenticated state.
+2. `AuthContext.signup()` → `POST /api/v1/auth/signup`.
+3. Backend validates via `SignupRequest`: email format, username 3–50 chars, password 8–72 chars and ≤72 UTF-8 bytes.
+4. `auth_service.create_user()`: checks email/username uniqueness (409 on conflict), hashes password, inserts, returns.
+5. Router returns `UserPublic` (never the hash) with `201`.
+6. Frontend auto-logs-in with the same credentials.
 
 ### Login
-1. `LoginPage` collects email + password → `useAuth().login()` → `authService.login()` → `POST /api/v1/auth/login` with `{ email, password }`.
-2. Backend validates via `LoginRequest`, calls `auth_service.authenticate_user()`:
-   - Looks up user by email.
-   - If no user found: still runs `verify_password()` against a precomputed dummy hash (constant-time-ish defense against email-enumeration-via-timing), then raises `InvalidCredentialsError`.
-   - If user found but password wrong: raises `InvalidCredentialsError`.
-   - If user found, password correct, but `is_active` is `False`: raises `InvalidCredentialsError`.
-   - **All three failure cases return the identical error** — this is deliberate, documented, and tested.
-3. On success, router calls `create_access_token(subject=user.id)` and returns `TokenResponse{ access_token, token_type: "bearer" }` with `200`.
-4. Frontend stores `access_token` and the submitted `email` in `localStorage` under `researchpilot_access_token` / `researchpilot_user_email`, updates React state, and the app treats `token !== null` as `isAuthenticated`.
+1. `LoginPage` → `POST /api/v1/auth/login`.
+2. `auth_service.authenticate_user()`: identical error for no-such-user, wrong-password, and inactive-user.
+3. On success: `create_access_token(subject=user.id)`, returns `TokenResponse`.
+4. Frontend stores token + email in `localStorage`.
 
 ### Protected routes
-**The dependency exists; no route consumes it yet.** `app/core/deps.py`'s `get_current_user` (Task 3A) verifies a bearer token and loads the `User`, fully unit-tested — but no endpoint currently checks the `Authorization` header, since no route declares `Depends(get_current_user)` yet. `docs/API.md` still correctly states "No endpoints are protected by this token yet." **Task 3B Checkpoint 3 (document endpoints) is the first real consumer.**
+**The dependency exists; no route consumes it yet.** `get_current_user` (Task 3A) is fully tested but unused by any endpoint. **Task 3B Checkpoint 3 (the upload endpoint) is the first real consumer.**
 
-### Token verification (mechanism, wired into a dependency, still unconsumed by any route)
-`app/core/security.py` has `decode_access_token(token) -> dict`, which calls `jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])` and raises `jwt.PyJWTError` (or a subclass like `ExpiredSignatureError`) on anything invalid/tampered/expired. As of Task 3A, this function is called from `app/core/deps.py`'s `get_current_user` — which extracts the `Authorization: Bearer <token>` header via `HTTPBearer`, calls `decode_access_token`, catches `jwt.PyJWTError`/`KeyError`/`ValueError` → `401`, looks up the user by the `sub` claim, 401s if not found or inactive, and returns the `User`.
+### Token verification
+`decode_access_token(token)` in `security.py`, called from `get_current_user`. Unchanged since Task 3A.
 
 ### Password hashing
-`bcrypt` (direct library — `bcrypt.hashpw`/`bcrypt.checkpw`), not `passlib`. 72-byte input limit enforced explicitly (not left to bcrypt's silent truncation) because silent truncation would let two different long passwords hash identically.
+`bcrypt` direct, 72-byte limit enforced explicitly.
 
 ### Dependencies involved
-`pyjwt`, `bcrypt`, `email-validator` (runtime dependency of Pydantic's `EmailStr`, added ad hoc during Task 2.2 — wasn't in the original plan). Neither `get_current_user` (Task 3A) nor the `Document` model (Task 3B Checkpoint 1) introduced any new dependency.
+`pyjwt`, `bcrypt`, `email-validator`. Neither Task 3A nor either Task 3B checkpoint so far introduced a new dependency.
 
 ---
 
@@ -554,116 +564,104 @@ Why: persists chat history; `source_chunk_ids` is what powers the "Source: page 
 
 | Method | Route | Purpose | Auth required? | Request | Response |
 |---|---|---|---|---|---|
-| GET | `/api/v1/health` | App + DB health check | No | — | `200 { status, app, environment, database }` or `503 { detail: { status, database, error } }` |
-| POST | `/api/v1/auth/signup` | Create a user account | No | `{ email, username, password }` | `201 UserPublic` or `409` (duplicate email/username) or `422` (validation) |
-| POST | `/api/v1/auth/login` | Exchange credentials for a JWT | No | `{ email, password }` | `200 { access_token, token_type }` or `401` (deliberately identical for all failure modes) |
+| GET | `/api/v1/health` | App + DB health check | No | — | `200 { status, app, environment, database }` or `503 { detail: {...} }` |
+| POST | `/api/v1/auth/signup` | Create a user account | No | `{ email, username, password }` | `201 UserPublic` or `409` or `422` |
+| POST | `/api/v1/auth/login` | Exchange credentials for a JWT | No | `{ email, password }` | `200 { access_token, token_type }` or `401` |
 
-**No routes changed in Task 3B Checkpoint 1** — `get_current_user` remains an importable, unconsumed dependency; the `Document` model has no route touching it yet.
+**No routes changed in either Task 3B checkpoint so far** — `get_current_user` remains unconsumed; `Document` and `storage_service` are both exercised only by tests.
 
 ### Planned but NOT implemented — updated per the approved Task 3B plan
 
 | Method | Route | Purpose | Auth required? |
 |---|---|---|---|
-| POST | `/api/v1/auth/refresh` | Exchange refresh token for new access token | No (refresh token in body) |
+| POST | `/api/v1/auth/refresh` | Exchange refresh token for new access token | No |
 | GET | `/api/v1/auth/google/callback` | OAuth callback | No — deferred to Phase 2/12 |
-| POST | `/api/v1/documents/upload` | Upload a PDF/DOCX/TXT (multipart, max 20MB) | **Yes** |
+| POST | `/api/v1/documents/upload` | Upload a PDF/DOCX/TXT (multipart, max 20MB) | **Yes** — Checkpoint 3, next up |
 | GET | `/api/v1/documents` | List the current user's documents | **Yes** |
 | GET | `/api/v1/documents/{id}` | Get one document's metadata | **Yes** |
 | GET | `/api/v1/documents/{id}/file` | Return the actual stored file (view/download) | **Yes** |
 | DELETE | `/api/v1/documents/{id}` | Delete a document (DB row + stored file) | **Yes** |
 
-These are Task 3B Checkpoint 3 scope — the data layer (Checkpoint 1, done) and service layer (Checkpoint 2, not started) come first. All future authenticated routes require `Authorization: Bearer <access_token>` and must filter by `user_id` at the query level (Phase 1 design doc §9). All endpoints live under the `/api/v1` prefix (`settings.api_v1_prefix`), registered for versioning from day one.
+All future authenticated routes require `Authorization: Bearer <access_token>` and must filter by `user_id` at the query level.
 
 ---
 
 ## 10. CODING CONVENTIONS
 
-**Naming:** `snake_case` for Python (files, functions, variables), `PascalCase` for Python classes and Pydantic/SQLAlchemy models, `camelCase` for TypeScript variables/functions, `PascalCase` for React components and TS types/interfaces. Route paths are centralized as constants (`frontend/src/constants/routes.ts`) rather than inlined as string literals.
+**Naming:** `snake_case` Python, `PascalCase` Python classes/models, `camelCase` TS, `PascalCase` React components/TS types. Route paths centralized as constants on the frontend.
 
-**Folder organization:** Strict layering by responsibility, not by feature — `api/` / `core/` / `db/` / `models/` / `schemas/` / `services/` / `workers/` on the backend; `pages/` / `components/` / `context/` / `hooks/` / `services/` / `types/` / `constants/` on the frontend. New features add files *inside* this structure; the structure itself is the "permanent skeleton" and is not expected to be reorganized in later phases.
+**Folder organization:** Strict layering by responsibility — `api/` / `core/` / `db/` / `models/` / `schemas/` / `services/` / `workers/` on the backend.
 
-**Dependency injection:** FastAPI's `Depends()` is the only DI mechanism used — `get_db` for DB sessions, and `get_current_user` (built in Task 3A, not yet consumed by any route) for auth. Settings are accessed via the cached `get_settings()`/module-level `settings`, not re-read from `os.environ`.
+**Dependency injection:** `Depends()` only — `get_db`, `get_current_user` (built, unconsumed).
 
 **Error handling:**
-- Services raise **domain-specific exceptions** (e.g. `EmailAlreadyExistsError`, `InvalidCredentialsError`) — plain `Exception` subclasses, no HTTP knowledge inside them.
-- Routers catch those specific exceptions and translate them to `HTTPException` with the appropriate status code and a human-readable `detail`.
-- The health endpoint deliberately catches broad `Exception` (with a `# noqa: BLE001` comment explaining why) because *any* DB failure should be treated as unhealthy.
-- `get_current_user` (Task 3A) returns a uniform `401` for every failure case — same "don't leak which part failed" pattern as `auth_service`.
-- Frontend: `services/api.ts` centralizes FastAPI error-body parsing (`{detail: string}` vs `{detail: [{msg}]}`) into one `extractErrorMessage()` function, so every caller gets a single readable string via a thrown `Error`.
+- Services raise domain-specific exceptions (`EmailAlreadyExistsError`, `InvalidCredentialsError`, and now `storage_service`'s `UnsupportedFileTypeError`/`StorageError`) — plain `Exception` subclasses, no HTTP knowledge.
+- Routers translate service exceptions to `HTTPException`.
+- `get_current_user` returns a uniform 401.
 
-**Validation:** Happens at the Pydantic schema boundary (`app/schemas/`), before any service code runs — e.g. password length and the bcrypt-byte-limit check are schema-level `Field` constraints and a `field_validator`, not service-level `if` statements. (`Document` has no Pydantic schema yet — Task 3B Checkpoint 2.)
+**Validation:** At the Pydantic schema boundary where a schema exists; `storage_service`'s extension validation is service-level since it operates on bytes/filenames, not a request body — no schema layer applies to it (no Pydantic model receives a raw file).
 
-**Response format:** JSON throughout. Success responses are typed Pydantic models (`response_model=...` on every route). Error responses always have a `detail` key — either a string (`HTTPException(detail="...")`) or a structured object (health check's 503 body), matching FastAPI's native shape so the frontend's single error-extraction function keeps working without route-specific special-casing.
+**Response format:** JSON throughout, `detail` key on errors.
 
-**Architecture principles (explicitly stated in the docstrings of the code itself, not just the design docs):**
-- Routers never touch the DB directly — always `api/` → `services/` → `models/`.
-- Nothing outside `app/core/security.py` touches `bcrypt` or `jwt` directly.
-- Nothing outside `app/core/config.py` reads `os.environ` directly.
-- Every new SQLAlchemy model must be imported in `app/models/__init__.py` — this is the one place Alembic autogenerate (and anything else needing the full schema) looks.
-- Frontend: nothing outside `services/*.ts` calls `fetch` directly.
-- No state library (Redux/Zustand) until the pain of Context + local state is actually felt.
-- No LangChain/LlamaIndex in Phase 1's RAG pipeline — hand-rolled, for the explicit purpose of being able to explain every step in an interview.
-- **No ORM `relationship()` added speculatively** — added at the same time as its first real consumer, so the async-appropriate loading strategy is chosen deliberately (see `Document`/`User`, Section 11).
+**Architecture principles (in code docstrings, not just design docs):**
+- Routers never touch the DB directly.
+- Nothing outside `security.py` touches `bcrypt`/`jwt`.
+- Nothing outside `config.py` reads `os.environ`.
+- Every new SQLAlchemy model imported in `models/__init__.py`.
+- No state library (Redux/Zustand) until it's actually needed.
+- No LangChain/LlamaIndex in Phase 1's RAG pipeline.
+- No ORM `relationship()` added speculatively.
+- **`storage_service.py` has no DB or HTTP-framework dependency, by design** — matches the general principle of adding coupling only when a real consumer needs it, applied here to the storage layer specifically.
 
 ---
 
 ## 11. IMPORTANT DESIGN DECISIONS
 
-*(Why things are the way they are, with rejected alternatives — pulled from the Phase 0 planning doc, the Phase 1 design doc, and decisions made and documented during actual implementation.)*
+1. **FastAPI over Django REST Framework or Node/Express.**
+2. **pgvector over Qdrant for Phase 1.**
+3. **No LangChain/LlamaIndex for RAG orchestration.**
+4. **Arq preferred over Celery.**
+5. **PyMuPDF over `unstructured` or GROBID for Phase 1 PDF parsing.**
+6. **JWT over session cookies.**
+7. **`bcrypt` direct + `PyJWT` direct, instead of `fastapi-users`/`python-jose`+`passlib`.**
+8. **JWT stored in `localStorage`, not an httpOnly cookie.**
+9. **Signup does not return a token; frontend auto-logs-in after signup.**
+10. **The `/` route placeholder is inline in `App.tsx`, not a separate `HomePage.tsx` component.**
+11. **Docker Compose is local-dev only; Redis and the worker service added only when needed.**
+12. **Everything on Railway except the frontend (Vercel).**
+13. **Streaming LLM responses is a nice-to-have for Phase 1, not a requirement.**
+14. **Test isolation via a function-scoped DB engine fixture, not module-scoped.**
+15. **Tests create schema via `Base.metadata.create_all()`/`drop_all()`, not real Alembic migrations.**
+16. **`HTTPBearer` over `OAuth2PasswordBearer` for `get_current_user`.**
+17. **Document Management (Task 3B) omits a `status` column.**
+18. **`python-magic` deferred for Task 3B** — extension + declared Content-Type validation only.
 
-1. **FastAPI over Django REST Framework or Node/Express.** Django was rejected as too batteries-included/ORM-first when an admin panel isn't needed at MVP stage. Node/Express was rejected because it would split the stack across two languages when Python is already doing the ML/RAG work.
+19. **No `relationship()` between `User` and `Document`** (Task 3B Checkpoint 1). This project uses async SQLAlchemy throughout; a default (`lazy="select"`) relationship raises `MissingGreenlet` at runtime if accessed outside an explicit `await` — a real footgun for whoever first writes `current_user.documents` with no reason to expect an async-specific error. Deferred to whichever checkpoint first has a real consumer, so the loading strategy (`lazy="selectin"`, or `AsyncAttrs.awaitable_attrs`) is chosen deliberately. Documented in-code on `Document.user_id`.
 
-2. **pgvector over Qdrant for Phase 1**, explicitly pushing back on the original idea notebook's plan to use Qdrant from day one. One database instead of two to run/back up/migrate. Qdrant is deliberately deferred to "the phase where it earns its keep" (Phase 4+, multi-paper/multi-user scale). The schema is kept clean specifically so this later migration is "a swap of one retrieval service, not a rewrite."
+20. **`stored_filename` tightened to `VARCHAR(64)`, computed rather than matched to a neighboring column.** UUID4 (36 chars) + longest in-scope extension (`.docx`, 5 chars) = always exactly 41 characters; 64 is generous headroom. Chosen over reusing `VARCHAR(255)` because the format is fully app-controlled, so the column documents the contract and fails loudly on anything unexpected.
 
-3. **No LangChain/LlamaIndex for RAG orchestration.** Hand-rolling the retrieval pipeline is judged more valuable than abstracting it away, both to avoid LangChain's documented version-churn/debugging pain and — importantly — because the project's purpose includes demonstrating RAG engineering skill in interviews. LlamaIndex is flagged as worth reconsidering specifically for Phase 5 (literature review generation needs multi-document synthesis primitives it's good at).
+21. **Storage service decoupled from both FastAPI's `UploadFile` and the database** (Task 3B Checkpoint 2). `save_file()`/`delete_file()` operate on raw bytes and filenames only. This is a specific application of the project's general "add coupling only when needed" philosophy: the storage layer doesn't need to know about HTTP request objects or ORM sessions to do its job, so it doesn't — keeping it testable with zero mocking and reusable if the upload path ever changes (e.g., a background job re-saving a file, not just an HTTP request).
 
-4. **Arq preferred over Celery** for the background worker, given FastAPI's async-first architecture — Celery is the explicitly-noted fallback if richer scheduling/retry ecosystem is needed later.
+22. **Flat storage directory layout, no per-user subdirectories** (Task 3B Checkpoint 2). This was explicitly left undecided in Checkpoint 1's schema comments ("the actual on-disk directory layout is a Checkpoint 2 decision, not yet made"). Decided now: UUID filenames are already globally collision-proof across all users, so a nested layout (e.g. `storage/uploads/<user_id>/<uuid>.pdf`) would add complexity — an extra path-construction step, an extra thing that could be gotten wrong — without solving a problem that actually exists at Phase 1's scale. Revisit if/when a real operational reason appears (e.g., wanting to `rsync` or quota one user's files independently).
 
-5. **PyMuPDF over `unstructured` or GROBID for Phase 1 PDF parsing.** `unstructured` is heavier/slower and handles messier documents than needed yet. GROBID is "the actual industry tool" (used by Semantic Scholar itself) for structured author/reference/section extraction, but it's a separate Java service — real added operational complexity — so it's deliberately deferred to Phase 3 when citation-generation features actually need it.
+23. **`storage_path` stores the write-time path, not a value recomputed from current config on each read** (Task 3B Checkpoint 2). If `UPLOAD_DIR` is ever reconfigured, files saved under the old path remain resolvable via their stored `storage_path`, rather than breaking because the app now looks in a different directory for a UUID it can otherwise reconstruct.
 
-6. **JWT over session cookies.** Stateless, scales horizontally without server-side session storage, and doesn't couple auth to server state if a mobile client is ever added. Tradeoff accepted: the team owns refresh/revocation logic.
-
-7. **`bcrypt` direct + `PyJWT` direct, instead of the Phase 0 doc's suggested `fastapi-users`/`python-jose`+`passlib`.** This is a deviation from the original plan that happened during actual implementation (see Section 15) — smaller, more auditable surface area, fewer abstraction layers to understand and explain.
-
-8. **JWT stored in `localStorage`, not an httpOnly cookie**, on the frontend. Documented, accepted tradeoff: httpOnly cookies would need backend changes that were out of scope for what was a frontend-only task at the time. This is real XSS exposure and is a candidate to revisit before Phase 1 is considered "production-ready" (see Section 15/19).
-
-9. **Signup does not return a token; frontend auto-logs-in after signup** by calling the login endpoint with the same credentials, rather than adding a second code path on the backend that issues tokens from signup. Keeps the backend's token-issuance logic in exactly one place.
-
-10. **The `/` route placeholder is inline in `App.tsx`, not a separate `HomePage.tsx` component.** Specific review-feedback decision to avoid creating a throwaway component that would just be deleted once the real dashboard is built.
-
-11. **Docker Compose is local-dev only; Redis and the worker service are added only when the task that needs them arrives** (explicitly commented in `docker-compose.yml` itself) — not spun up speculatively ahead of need.
-
-12. **Everything on Railway except the frontend (which goes to Vercel)**, to minimize the number of separate dashboards/configs a solo developer has to juggle during Phase 1, while still getting Vercel's free CDN tier and deploy-decoupling for the frontend.
-
-13. **Streaming LLM responses is explicitly a nice-to-have for Phase 1, not a requirement** — return the full answer in one response first; only add streaming if time remains. Don't let it block deployment (Phase 1 design doc §5, and again in the Day-4 cut list, §20).
-
-14. **Test isolation via a function-scoped DB engine fixture, not a module-scoped one** — because `asyncpg` connections are bound to the event loop they were opened in, and `pytest-asyncio` gives each test function its own loop by default. This was a real bug (see Section 15) fixed by this specific fixture-scoping decision.
-
-15. **Tests create schema via `Base.metadata.create_all()`/`drop_all()`, not by running actual Alembic migrations**, for speed — at the accepted cost of the test suite never actually exercising the migration files themselves. Flagged explicitly as a "known risk" in the code's own docstring (`conftest.py`).
-
-16. **`HTTPBearer` over `OAuth2PasswordBearer` for `get_current_user`** (Task 3A). `/auth/login` accepts a JSON body, not the OAuth2 password-flow's form-encoded `username`/`password` contract — `OAuth2PasswordBearer` would misrepresent that in the generated Swagger docs. Trade-off accepted: Swagger's "Authorize" dialog needs a token pasted in manually rather than offering a friendlier login form.
-
-17. **Document Management (Task 3B) omits a `status` column**, deviating from the original Phase 1 design doc's `documents` schema sketch. That sketch anticipated the async parse→embed pipeline; Task 3B is explicitly upload/store/list/view/delete only (no parsing), so upload is synchronous and a status column would always read "ready." Revisit when a processing task actually needs it.
-
-18. **`python-magic` deferred for Task 3B** — extension + declared Content-Type validation only for now. Deep content-byte sniffing (real production-standard practice, but requires the system `libmagic` library and a Dockerfile change) is deliberately pushed to the Phase 12 security-hardening pass rather than added speculatively now.
-
-19. **No `relationship()` between `User` and `Document`** (Task 3B Checkpoint 1). This project uses async SQLAlchemy throughout; a default (`lazy="select"`) relationship raises `MissingGreenlet` at runtime if accessed outside an explicit `await` — a real footgun for whoever first writes `current_user.documents` in a route handler with no reason to expect an async-specific error. The correct loading strategy (`lazy="selectin"`, or `AsyncAttrs.awaitable_attrs`) is a decision best made at the same time as the first real call site that needs it, not speculatively with nothing to consume it. Explicit `select(Document).where(Document.user_id == ...)` queries are the correct pattern for "list a user's documents" regardless — nothing is lost by deferring, and it's additive to add later (no migration impact). Documented directly in a code comment on `Document.user_id`, per an explicit request to make this discoverable without chat history. Trade-off accepted: no `current_user.documents` convenience accessor until a checkpoint actually needs it.
-
-20. **`stored_filename` tightened to `VARCHAR(64)`, computed rather than matched to a neighboring column.** A canonical UUID4 (36 chars) + the longest in-scope extension (`.docx`, 5 chars) is always exactly 41 characters; 64 is generous headroom above that exact bound. Chosen over just reusing `VARCHAR(255)` (like `original_filename`) because the format is fully app-controlled, so the column itself can document the contract and fail loudly if the storage service (Checkpoint 2) ever produces something unexpected.
+24. **`max_upload_size_mb` was not added in Checkpoint 2**, despite being part of the original Task 3B plan's config list. Reasoning made explicit in Checkpoint 2: the storage service persists whatever bytes it's handed — enforcing a size cap belongs at the point the upload is first read (the endpoint, Checkpoint 3), not the layer that just writes bytes to disk. Expect this setting to be added when Checkpoint 3 is implemented, not before.
 
 ---
 
 ## 12. CURRENT TASK STATUS
 
-**Completed and verified (both by automated tests and, where noted, by real manual/browser/database verification):**
-- Task 1 — Project skeleton (backend + frontend scaffolds, Docker Compose, health check).
-- Task 2.1 — Database foundation (`TimestampMixin`, `BaseModel`, `User` model, first Alembic migration).
-- Task 2.2 — Authentication foundation on the backend (hashing, JWT create/decode, signup/login services and routes, 12 passing tests, CI fixed to run Postgres+pytest, `.env.example` completed).
-- Task 2.3 — Frontend authentication (Auth context/hook, login/signup pages, routing shell, Playwright-verified user flow).
-- Task 3A — `get_current_user` protected-route dependency (5 passing unit tests, verified against a real database, not yet consumed by any route).
-- Task 3B Checkpoint 1 — Document data layer (`Document` model, `documents` table migration, 5 passing model-level tests, verified against a real database including cascade-delete and unique-constraint behavior).
+**Completed and verified (both by automated tests and, where noted, by real manual/browser/database/filesystem verification):**
+- Task 1 — Project skeleton.
+- Task 2.1 — Database foundation.
+- Task 2.2 — Authentication foundation (backend).
+- Task 2.3 — Frontend authentication.
+- Task 3A — `get_current_user` protected-route dependency.
+- Task 3B Checkpoint 1 — Document data layer.
+- Task 3B Checkpoint 2 — Storage service.
 
-**Git state:** per the user, Tasks 2.1 through 3B Checkpoint 1 have each been implemented, tested, committed, and pushed to `main` following the recommended commit message given at the end of each milestone. Claude does not have direct git access to the live repository, so exact commit hashes beyond the original 5 aren't tracked in this document — the user's real `git log` is authoritative. The original 5 commits remain the documented baseline:
+**Git state:** per the user, all of the above have been implemented, tested, committed, and pushed to `main` following the recommended commit message given at the end of each milestone. Claude does not have direct git access to the live repository, so exact commit hashes beyond the original 5 aren't tracked in this document — the user's real `git log` is authoritative. The original 5 commits remain the documented baseline:
 ```
 9e92630 feat(frontend): implement authentication flow
 ee65cc5 feat(auth): implement JWT authentication foundation
@@ -677,102 +675,86 @@ followed by (recommended messages, in order — not hashes):
 - `feat(frontend): login/signup pages, auth context, centralized routes` (Task 2.3)
 - `feat(auth): add get_current_user protected-route dependency` (Task 3A)
 - `feat(documents): add Document model, migration, and model-level tests` (Task 3B Checkpoint 1)
+- `feat(documents): add storage service (local disk, Task 3B Checkpoint 2)` (Task 3B Checkpoint 2)
 
 **Not started at all:**
-- Task 3B Checkpoint 2 (service layer: `document_service.py`, `DocumentResponse` schema, `upload_dir`/`max_upload_size_mb`/`allowed_content_types` settings).
-- Task 3B Checkpoint 3 (API layer: `app/api/documents.py`, `python-multipart` dependency, `get_current_user`'s first real route consumer).
-- Task 3B Checkpoint 4 (housekeeping: `.env.example`, `.gitignore`, `docker-compose.yml` volume, `docs/API.md`).
-- Background worker, chunking, embeddings, pgvector usage — out of scope even for all of Task 3B; arrives with a later parsing/RAG task.
-- Everything related to chat: models, endpoints, RAG service, LLM integration.
-- All frontend pages/components beyond auth: Dashboard, UploadButton, DocumentCard, DocumentViewPage, PdfViewer, ChatPanel (Task 3C — planned only at a high level so far).
-- Redis + Arq wiring into `docker-compose.yml`.
-- Any actual deployment (no live URLs exist).
+- Task 3B Checkpoint 3 — the authenticated upload endpoint, composing `get_current_user` + `storage_service` + `Document` together for the first time. Likely also introduces a DB-touching document service and `DocumentResponse` schema (exact shape to be planned at that checkpoint).
+- Task 3B Checkpoint 4 — housekeeping (`.env.example`, `.gitignore`, `docker-compose.yml` volume, `docs/API.md`).
+- Background worker, chunking, embeddings, pgvector usage.
+- Everything related to chat.
+- All frontend pages/components beyond auth (Task 3C — planned only at a high level).
+- Redis + Arq wiring.
+- Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None in the sense of half-written features — every completed task/checkpoint is fully working and tested end-to-end for its own scope. The "partial" state is architectural: the `documents` table exists and is tested, but nothing outside tests reads or writes to it — that only becomes real once Checkpoint 2's service layer exists, and user-scoped enforcement only becomes real once Checkpoint 3's routes declare `Depends(get_current_user)`.
+**Partially completed work:** None in the sense of half-written features. The "partial" state is architectural: the `documents` table and the storage service both exist and are independently tested, but they've never been used *together*, and neither has ever been touched by an HTTP request — that composition is entirely Checkpoint 3's job.
 
 ---
 
 ## 13. NEXT TASK
 
-**Task 3B — Checkpoint 2: Service layer (unit-testable without auth or HTTP).** Per the already-approved four-checkpoint plan:
+**Task 3B — Checkpoint 3: Document upload API.** Per the approved four-checkpoint plan, this is the integration checkpoint — composing already-built pieces rather than introducing new abstractions:
 
-`app/core/config.py` (add `upload_dir`, `max_upload_size_mb`, `allowed_content_types`), `app/schemas/document.py` (`DocumentResponse`), `app/services/document_service.py` (`save_uploaded_file`, `create_document`, `list_documents_for_user`, `get_document_for_user`, `delete_document_for_user` — file deleted before DB row, so a failed file-delete leaves a recoverable row rather than an orphaned file), `backend/tests/test_document_service.py` (unit tests, plain UUID as owner, no HTTP/auth needed). **Test:** `pytest tests/test_document_service.py -v`.
+- `get_current_user` — first real route consumer.
+- `storage_service.save_file()` — called with the uploaded file's bytes.
+- `Document` — a row constructed from the resulting `SavedFile` (field names already match 1:1, per Checkpoint 2's design).
+- New: `app/api/documents.py` (at minimum `POST /documents/upload`; the other four endpoints in Section 9's table may or may not land in this same checkpoint depending on how the checkpoint is scoped when planned), `python-multipart` dependency, `main.py` router registration, a response schema, likely a DB-touching document service, and full HTTP-level tests (including the ownership/auth cases — no token → 401, wrong user's token → 404, oversized/disallowed file → 422).
 
-**After Checkpoint 2:**
-- **Checkpoint 3** — API layer (`app/api/documents.py`, `python-multipart` dependency, `main.py` router registration, full HTTP tests including ownership/auth cases — `get_current_user`'s first real consumer).
-- **Checkpoint 4** — Housekeeping (`.env.example`, `.gitignore`, `docker-compose.yml` uploads volume, `docs/API.md`).
-- **Task 3C** — frontend document management UI (upload, list, view/download, delete) plus extending `services/api.ts` to attach the `Authorization` header for the first time. Detailed plan to be produced once Task 3B (backend) fully lands.
+**After Checkpoint 3:**
+- **Checkpoint 4** — housekeeping.
+- **Task 3C** — frontend document management UI, plus extending `services/api.ts` with `Authorization` header injection for the first time.
 
 **Confirmed decisions from planning (do not re-litigate without a new reason):**
-- `python-magic` skipped for Phase 1 — extension + declared Content-Type only; revisit at Phase 12.
-- Both `GET /documents/{id}` (metadata) and `GET /documents/{id}/file` (actual file) are in scope — confirmed by the user.
-- No `status` column, no background worker — synchronous upload only.
-- No `relationship()` between `User`/`Document` — deferred to whichever checkpoint first needs ORM navigation (see Section 11 #19).
+- `python-magic` skipped for Phase 1.
+- Both `GET /documents/{id}` and `GET /documents/{id}/file` in scope.
+- No `status` column, no background worker.
+- No `relationship()` between `User`/`Document`.
+- Flat storage directory layout (Checkpoint 2).
+- `max_upload_size_mb` enforcement belongs at the endpoint layer (Checkpoint 2's explicit deferral) — expect it to be added as part of Checkpoint 3.
 
 ---
 
 ## 14. ROADMAP
 
-Restating the full phase plan (Phase 0 doc §10 confirms this structure "as written," with the two Qdrant/GROBID timing adjustments already noted):
-
 - **Phase 1 (current, in progress):** Single-document upload + chat, deployed.
   - Auth ✅ done.
   - Protected-route dependency (`get_current_user`) ✅ done (Task 3A), not yet consumed by any route.
   - Document data layer ✅ done (Task 3B Checkpoint 1).
-  - Document management service + API + housekeeping (Task 3B Checkpoints 2–4) — next up, checkpointed plan approved.
+  - Storage service ✅ done (Task 3B Checkpoint 2).
+  - Document upload API + housekeeping (Task 3B Checkpoints 3–4) — next up.
   - Document processing/chat (parsing, embeddings, RAG) — not started, later within Phase 1.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.
-- **Phase 3:** Notes, highlights, tags; GROBID metadata extraction (authors/references/structured sections) as a new containerized service.
-- **Phase 4:** Multi-paper comparison. Candidate point to introduce Qdrant as a dedicated vector service, once multi-user/multi-paper scale justifies it.
-- **Phase 5:** Literature review generation (multi-document synthesis — candidate point to reconsider LlamaIndex), with Markdown/PDF/DOCX export.
+- **Phase 3:** Notes, highlights, tags; GROBID metadata extraction.
+- **Phase 4:** Multi-paper comparison. Candidate point to introduce Qdrant.
+- **Phase 5:** Literature review generation.
 - **Phase 6:** Research gap detection.
-- **Phase 7:** Interactive knowledge graph (e.g. Transformer → BERT/GPT/Llama/Qwen style concept graph).
-- **Phase 8:** Figure and equation explanation (click a figure/equation, get an AI explanation).
+- **Phase 7:** Interactive knowledge graph.
+- **Phase 8:** Figure and equation explanation.
 - **Phase 9:** Similar-paper recommendations.
-- **Phase 10:** Research dashboard/analytics (papers uploaded, reading time, topic/embedding clusters, weekly insights).
-- **Phase 11:** Collaboration (share collections, invite teammates, comments, collaborative notes).
-- **Phase 12:** Production polish — Prometheus/Grafana monitoring, structured logging, Sentry (may land earlier informally), rate limiting, email verification, forgot-password flow, mobile-responsive UI, `python-magic` content-sniffing revisit.
+- **Phase 10:** Research dashboard/analytics.
+- **Phase 11:** Collaboration.
+- **Phase 12:** Production polish.
 
-**Milestone framing for Phase 1 specifically (acceptance criteria from the Phase 1 design doc §18 — this is the actual bar for calling Phase 1 "done"):**
-On the **deployed** (not local) app, a fresh user must be able to:
-1. Sign up and log in.
-2. Upload a PDF and watch its status move uploading → processing → ready.
-3. Open the document and ask a question about its content.
-4. Receive an answer that references a source page.
-5. Refresh the page and see chat history persist.
-6. Log out and back in and still see their document.
-
-"Works on my machine" explicitly does not count — it must work on the live deployment.
+**Milestone framing for Phase 1 (acceptance criteria, Phase 1 design doc §18):**
+On the **deployed** (not local) app, a fresh user must be able to sign up/log in, upload a PDF and watch its status move to ready, ask a question and get a sourced answer, refresh and see history persist, and log back in and still see their document. "Works on my machine" does not count.
 
 ---
 
 ## 15. KNOWN ISSUES
 
-*(Real discrepancies between docs and the actual repository — not hypothetical. These should be resolved or at least consciously accepted, not silently carried forward.)*
-
-1. ~~**CI is stale relative to what CHANGELOG claims.**~~ **RESOLVED in Task 2.2.** `.github/workflows/ci.yml` now includes a Postgres service container and runs the real test suite (`pytest`), not just an import smoke test. All 22 backend tests (12 auth + 5 deps + 5 document model) now actually gate merges to `main`.
-
-2. **`docs/ROADMAP.md`'s task log** is kept current alongside each milestone as of Task 3A's documentation-as-part-of-the-milestone process — see the separate `ROADMAP.md` update provided with this milestone's documentation sync (now shows Task 3B's checkpoint-level breakdown).
-
-3. ~~**`backend/.env.example` is incomplete.**~~ **RESOLVED in Task 2.2.** `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` were added alongside the CI fix. Section 16 below reflects the real, current file.
-
-4. **The Phase 1 design doc's API sketch includes `POST /auth/refresh` and a refresh token in both signup/login responses; the actual implementation only issues an access token (`TokenResponse{ access_token, token_type }`, no refresh token at all).** This looks like a deliberate scope-simplification made during implementation (access-token-only auth is simpler to build and was apparently judged sufficient for now), but it was never reconciled back into `docs/API.md` or the Phase 1 design doc. `docs/API.md` (the one actually shipped in the repo) correctly reflects the simpler, real, access-token-only behavior — so treat `docs/API.md` as accurate and the two design docs as historical intent on this point.
-
-5. **The `users` table has a `username` field that the Phase 0/Phase 1 design docs' schema sketches never included** (their sketch only had `email`/`hashed_password`). This isn't a bug — the real, tested schema is `username` included and it's a deliberate, working design — but it means the design docs are out of sync with reality here too. `docs/API.md`'s auth section correctly reflects the real, username-including behavior, so trust that over the two design docs on this specific point.
-
-6. **`python-multipart` is not yet a backend dependency**, but it's required the moment Task 3B Checkpoint 3's upload endpoint is added (FastAPI needs it for `UploadFile`/multipart form parsing). Already planned as part of that checkpoint.
-
-7. **JWT stored in `localStorage` on the frontend** is a real, documented, and consciously-accepted XSS exposure tradeoff (see Section 11, decision #8) rather than an oversight — but it's still technical debt worth revisiting before Phase 1 is called genuinely production-ready, especially once real user data (uploaded papers) is at stake.
-
-8. **No rate limiting anywhere yet** — signup/login endpoints in particular are open to brute-force/credential-stuffing today. This is explicitly deferred to Phase 12 by design (not a surprise), but worth being aware of if the app is deployed publicly before Phase 12.
-
-9. **`document_chunks.embedding` is planned as `vector(1536)`**, which assumes a specific embedding model dimensionality (e.g. OpenAI's `text-embedding-3-small`/`ada-002`). No `LLM_PROVIDER`/embedding-model decision has actually been locked into code yet. Whichever embedding model is actually chosen when this is built needs its dimensionality to match the `vector(N)` column, or the migration will need adjusting. Not relevant to Task 3B (Document Management has no chunks/embeddings).
-
-10. **Nothing is deployed yet.** All "deployment architecture" content in this document is design intent, not current state — there is no live Railway or Vercel URL to link from the README yet.
-
-11. **`User.documents` / `Document.user` ORM relationships don't exist**, only the raw FK column. Deliberate, documented (Section 11 #19) — not an oversight, but worth knowing if a future checkpoint's code reaches for `current_user.documents` and it's not there yet.
+1. ~~**CI is stale.**~~ **RESOLVED in Task 2.2.**
+2. **`docs/ROADMAP.md`'s task log** kept current alongside each milestone (see the separate `ROADMAP.md` update with this sync).
+3. ~~**`backend/.env.example` is incomplete.**~~ **RESOLVED in Task 2.2.**
+4. **The Phase 1 design doc's API sketch includes `POST /auth/refresh`; the actual implementation is access-token-only.** `docs/API.md` correctly reflects the real behavior; treat the design docs as historical intent on this point.
+5. **The `users` table has a `username` field the design docs' schema sketch never included.** Real, deliberate, working design; docs out of sync.
+6. **`python-multipart` is not yet a backend dependency** — required the moment Task 3B Checkpoint 3's upload endpoint is added.
+7. **JWT stored in `localStorage`** — documented, accepted XSS trade-off, still worth revisiting before "production-ready."
+8. **No rate limiting anywhere yet** — deferred to Phase 12 by design.
+9. **`document_chunks.embedding` is planned as `vector(1536)`**, assuming a specific embedding model. No decision locked into code yet.
+10. **Nothing is deployed yet.**
+11. **`User.documents` / `Document.user` ORM relationships don't exist**, only the raw FK column. Deliberate (Section 11 #19).
+12. **`max_upload_size_mb` doesn't exist in config yet** — deliberately deferred from Checkpoint 2 to Checkpoint 3 (Section 11 #24), not an oversight, but worth tracking until it actually lands.
 
 ---
 
@@ -781,17 +763,17 @@ On the **deployed** (not local) app, a fresh user must be able to:
 ### Currently defined and used in code (`app/core/config.py`)
 | Variable | Purpose | Default |
 |---|---|---|
-| `APP_NAME` | Display name, used in health check response | `"ResearchPilot AI"` |
-| `ENVIRONMENT` | `development` \| `production` — also toggles SQLAlchemy `echo` (SQL logging) | `"development"` |
-| `DATABASE_URL` | Async SQLAlchemy connection string (`postgresql+asyncpg://...`) | `postgresql+asyncpg://postgres:postgres@localhost:5432/researchpilot` |
-| `JWT_SECRET_KEY` | HMAC signing key for JWTs — **must be overridden with a real secret outside development** | `"dev-secret-change-me"` (unsafe placeholder) |
+| `APP_NAME` | Display name | `"ResearchPilot AI"` |
+| `ENVIRONMENT` | `development` \| `production` | `"development"` |
+| `DATABASE_URL` | Async SQLAlchemy connection string | `postgresql+asyncpg://postgres:postgres@localhost:5432/researchpilot` |
+| `JWT_SECRET_KEY` | HMAC signing key — **must be overridden outside development** | `"dev-secret-change-me"` |
 | `JWT_ALGORITHM` | JWT signing algorithm | `"HS256"` |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime | `30` |
-| `CORS_ORIGINS` | Comma-separated list of allowed frontend origins | `"http://localhost:5173"` |
+| `CORS_ORIGINS` | Comma-separated allowed frontend origins | `"http://localhost:5173"` |
+| `UPLOAD_DIR` | Local disk directory for saved files (Task 3B Checkpoint 2) | `"storage/uploads"` |
+| `ALLOWED_UPLOAD_EXTENSIONS` | Comma-separated, dot-prefixed allow-list (Task 3B Checkpoint 2) | `".pdf,.docx,.txt"` |
 
-**No new environment variables in Task 3B Checkpoint 1** — `upload_dir`/`max_upload_size_mb`/`allowed_content_types` are Checkpoint 2 scope.
-
-### Currently in `backend/.env.example` (real file, complete as of Task 2.2)
+### Currently in `backend/.env.example`
 ```
 APP_NAME="ResearchPilot AI"
 ENVIRONMENT=development
@@ -801,29 +783,28 @@ JWT_ALGORITHM=HS256
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
 CORS_ORIGINS=http://localhost:5173
 ```
+**Note:** `UPLOAD_DIR`/`ALLOWED_UPLOAD_EXTENSIONS` are defined in `config.py` with working defaults, but **not yet added to `.env.example`** — that's Checkpoint 4 (housekeeping) scope, not done yet. Tracked here so it isn't forgotten.
 
 ### Frontend (`frontend/.env.example`, real file)
 ```
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
-### Test-only (referenced in `tests/conftest.py`, optional override)
-`TEST_DATABASE_URL` — if unset, defaults to `settings.database_url` with `/researchpilot` swapped for `/researchpilot_test`. **Note:** this database must exist already (the test fixture creates tables via `Base.metadata.create_all()`, but does not create the database itself) — confirm a local `researchpilot_test` Postgres database exists before running the test suite in a fresh environment.
+### Test-only
+`TEST_DATABASE_URL` — see `tests/conftest.py`. Note: `test_storage_service.py` needs no such variable at all, since it has no DB dependency.
 
-### Planned, not yet in code (needed for Task 3B Checkpoint 2 and beyond)
+### Planned, not yet in code
 ```
-# Backend — Task 3B Checkpoint 2
-UPLOAD_DIR=./storage/uploads
+# Backend — Task 3B Checkpoint 3 (expected)
 MAX_UPLOAD_SIZE_MB=20
 
-# Backend — later (parsing/RAG task, well past Task 3B)
+# Backend — later (well past Task 3B)
 REDIS_URL=redis://...
-JWT_REFRESH_EXPIRE_DAYS=7            # only relevant if refresh tokens are (re)added — see Section 15 #4
-LLM_API_KEY=                          # Claude or OpenAI
-LLM_PROVIDER=anthropic                # or openai
+JWT_REFRESH_EXPIRE_DAYS=7
+LLM_API_KEY=
+LLM_PROVIDER=anthropic
 EMBEDDING_API_KEY=
 ```
-Secrets are never committed — `.env.example` stays in the repo, real `.env` is gitignored (confirmed: `backend/.env` and `frontend/.env` are both in `.gitignore`), and real secrets are meant to be set directly in Railway/Vercel dashboards at deploy time.
 
 ---
 
@@ -832,90 +813,82 @@ Secrets are never committed — `.env.example` stays in the repo, real `.env` is
 ### Backend (`backend/pyproject.toml`, actual)
 | Package | Why it's here |
 |---|---|
-| `fastapi` | Web framework — async, Pydantic-validated, auto OpenAPI docs |
-| `uvicorn[standard]` | ASGI server to run FastAPI |
-| `pydantic` | Request/response validation and serialization |
-| `pydantic-settings` | Typed, env-driven app configuration (`app/core/config.py`) |
-| `sqlalchemy` | Async ORM for Postgres |
-| `asyncpg` | Async Postgres driver, used by SQLAlchemy's async engine |
-| `alembic` | Database migrations |
-| `python-dotenv` | Loads `.env` files locally |
-| `bcrypt` | Password hashing (direct library, not `passlib` — see Section 11 #7) |
-| `pyjwt` | JWT encode/decode (direct library, not `python-jose`) |
-| `email-validator` | Runtime dependency required by Pydantic's `EmailStr` — added ad hoc during Task 2.2, not originally planned |
-| `pytest` *(dev)* | Test runner |
-| `pytest-asyncio` *(dev)* | Async test support (`asyncio_mode = "auto"` set in `pyproject.toml`) |
-| `httpx` *(dev)* | Async HTTP client used to drive FastAPI's ASGI app directly in tests (`ASGITransport`) |
+| `fastapi` | Web framework |
+| `uvicorn[standard]` | ASGI server |
+| `pydantic` | Validation/serialization |
+| `pydantic-settings` | Config |
+| `sqlalchemy` | Async ORM |
+| `asyncpg` | Async Postgres driver |
+| `alembic` | Migrations |
+| `python-dotenv` | `.env` loading |
+| `bcrypt` | Password hashing |
+| `pyjwt` | JWT |
+| `email-validator` | Pydantic `EmailStr` |
+| `pytest` / `pytest-asyncio` / `httpx` *(dev)* | Testing |
 
-**Neither `get_current_user` (Task 3A) nor `Document` (Task 3B Checkpoint 1) added any new dependency.**
+**None of Task 3A, Checkpoint 1, or Checkpoint 2 added a new dependency.**
 
-**Needed soon but not yet added:** `python-multipart` (Task 3B Checkpoint 3, file uploads — next up after the service layer), `arq` (background jobs — well past Task 3B), an Anthropic and/or OpenAI SDK, `pymupdf` (`fitz`), possibly `pgvector` (the Python package providing the SQLAlchemy `Vector` type) once the `document_chunks` model is written. `python-magic` considered and deliberately deferred to Phase 12 (see Section 11 #18).
+**Needed soon but not yet added:** `python-multipart` (Checkpoint 3, imminent), `arq`, an LLM/embedding SDK, `pymupdf`, possibly `pgvector` (the Python package). `python-magic` deliberately deferred to Phase 12.
 
 ### Frontend (`frontend/package.json`, actual)
 | Package | Why it's here |
 |---|---|
 | `react`, `react-dom` | UI framework |
-| `react-router-dom` | Client-side routing (`BrowserRouter`, `Routes`, `Route`, `useNavigate`, `Link`) |
-| `@types/node`, `@types/react`, `@types/react-dom` *(dev)* | TypeScript type definitions |
-| `@vitejs/plugin-react` *(dev)* | Vite's React plugin (JSX transform, fast refresh) |
-| `oxlint` *(dev)* | Linter (the project's `npm run lint` — note: not ESLint) |
-| `typescript` *(dev)* | Type checking + `tsc -b` as part of the build step |
-| `vite` *(dev)* | Dev server + build tool |
+| `react-router-dom` | Routing |
+| dev tooling | `@types/*`, `@vitejs/plugin-react`, `oxlint`, `typescript`, `vite` |
 
-**Needed soon but not yet added:** a PDF viewer library (e.g. `pdfjs-dist` or a React wrapper) for the Document view page, once that's built. Task 3C (frontend document management) will need `services/api.ts` extended with `Authorization` header injection — the first protected frontend request.
+**Needed soon:** a PDF viewer library, `services/api.ts` `Authorization` header injection (Task 3C).
 
 ---
 
 ## 18. GIT STATE
 
-See Section 12 ("CURRENT TASK STATUS") for the current, consolidated git state — consolidating here would duplicate that section; kept in one place going forward to avoid drift between the two.
+See Section 12.
 
 ---
 
 ## 19. DEVELOPMENT RULES
 
-The next Claude **must** follow these rules when continuing this project:
-
-- **Never rewrite working code.** Tasks 1 through 3B Checkpoint 1 are complete, tested, and (for auth/frontend/data layer) manually verified in a real browser or against a real database. Extend them; don't rewrite them.
-- **Never change architecture without justification.** The layering (`api/` → `services/` → `models/`), the pgvector-over-Qdrant decision, the no-LangChain decision, the folder structure, and the deferred-`relationship()` decision are all deliberate, documented choices (Section 11) — don't second-guess them without a concrete new reason, and if there is one, explain it before implementing.
-- **Always explain major design decisions before implementation** — this project's own history (every design doc, every CHANGELOG entry) shows decisions get written down *before* code, with rejected alternatives named. Continue that pattern.
-- **Keep code production-ready.** Tests are written alongside features, not after. Manual/browser/database verification, not just "tests pass," is the actual bar that's been used so far for every task — including Task 3B Checkpoint 1, where the unique constraint and cascade-delete behavior were confirmed against a real database, not just assumed from the migration file.
-- **Preserve the existing folder structure.** New features add files inside `api/`, `services/`, `models/`, `schemas/`, `workers/`, `core/` (backend) and `pages/`, `components/`, `services/`, `hooks/`, `types/` (frontend) — no reorganization.
-- **Follow existing coding style** — see Section 10 in full. In particular: routers stay thin, services own business logic and raise domain exceptions, schemas own validation, `app/core/security.py`, `app/core/deps.py`, and `app/core/config.py` remain the only places touching `bcrypt`/`jwt`/`os.environ`.
-- **Avoid unnecessary abstractions.** This project has explicitly and repeatedly chosen the simpler option at every layer where complexity wasn't yet earning its keep: no LangChain, no Redux/Zustand, no Qdrant, no GROBID, no React Query, no `python-magic` (yet), no `status` column on `documents` (yet), no ORM `relationship()` (yet) — all deferred to the phase where the pain of not having them is actually felt. Match that judgment.
-- **Focus on scalable SaaS architecture** — the schema, the auth model, and the service-layer separation are all designed so that going from "one user, one document" to "many users, many documents" is additive, not a rewrite. Keep building that way.
-- **Think like a senior backend engineer:** validate at the boundary, raise specific exceptions, write the test that would have caught the last bug, and don't let a design doc's plan override what implementation discovers is actually right — just make sure the docs get updated to match reality afterward, unlike what happened with the first few docs-vs-code drifts in this project's history.
-- **Documentation is part of the milestone, not an afterthought.** As of Task 3A, the workflow is: implement → test → verify → commit/push → **update docs to match the repository → commit/push docs** → stop and wait for approval. Don't skip the doc-sync step, and don't bundle it silently into the next milestone's diff.
+- **Never rewrite working code.** Tasks 1 through 3B Checkpoint 2 are complete, tested, and manually verified. Extend them; don't rewrite them.
+- **Never change architecture without justification.** Layering, pgvector-over-Qdrant, no-LangChain, folder structure, deferred `relationship()`, flat storage layout — all deliberate, documented (Section 11).
+- **Always explain major design decisions before implementation.**
+- **Keep code production-ready.** Manual/real-infrastructure verification, not just "tests pass," is the bar — including filesystem verification for the storage service, not just pytest's `tmp_path`.
+- **Preserve the existing folder structure.**
+- **Follow existing coding style** (Section 10).
+- **Avoid unnecessary abstractions** — no LangChain, no Redux/Zustand, no Qdrant, no GROBID, no React Query, no `python-magic` yet, no `status` column yet, no ORM `relationship()` yet, no per-user storage subdirectories yet, no `max_upload_size_mb` yet — all deferred to the phase/checkpoint where the pain of not having them is actually felt.
+- **Focus on scalable SaaS architecture.**
+- **Think like a senior backend engineer** — validate at the boundary, raise specific exceptions, write the test that would have caught the last bug.
+- **Documentation is part of the milestone, not an afterthought.** Implement → test → verify → commit/push → update docs → commit/push docs → stop and wait for approval.
 
 ---
 
 ## 20. PROJECT MEMORY
 
-*(Everything else worth knowing — assumptions, prior discussions, rejected ideas, philosophy — that doesn't fit cleanly into a numbered section above but matters for continuity.)*
+**Origin and philosophy.** This project began as a brainstorm in `Project_Idea.ipynb`. The "Phase 0 Planning" doc pushed the scope down from "Postgres + Qdrant + Redis from day one" to "pgvector only, Qdrant later," and "GROBID from the start" to "PyMuPDF now, GROBID in Phase 3." **This push-the-scope-down instinct is a core, intentional pattern** — "one MVP, deployed early, extended incrementally," "every extra moving part gets introduced in the phase where it earns its keep." **Task 3B's dropped `status` column, deferred `python-magic`, deferred `relationship()`, flat (not nested) storage layout, and deferred `max_upload_size_mb` are all the same instinct applied checkpoint by checkpoint.**
 
-**Origin and philosophy.** This project began as a brainstorm in `Project_Idea.ipynb` — an unstructured, enthusiastic 17-feature pitch explicitly framed around resume/interview value ("Recruiters LOVE this," "Huge interview point," difficulty rated "9–9.5/10... because you're integrating many components into one polished application"). The very first structured response to that pitch (captured as the "Phase 0 Planning" doc) deliberately pushed back on parts of the original enthusiasm — most notably talking the scope down from "Postgres + Qdrant + Redis from day one" to "pgvector only, Qdrant later," and from "GROBID from the start" to "PyMuPDF now, GROBID in Phase 3." **This push-the-scope-down instinct is a core, intentional pattern of this project and should continue** — the explicit stated principle is "one MVP, deployed early, extended incrementally," and "every extra moving part... gets introduced in the phase where it earns its keep," not speculatively. **Task 3B's dropped `status` column, deferred `python-magic`, and now the deferred `relationship()` (Checkpoint 1) are the most recent examples of this same instinct.**
+**The "resume evolution" framing is load-bearing for scope decisions.** Deployment is the Phase 1 exit criterion, not a formality. Nothing is deployed yet; treat as urgent once the core loop works.
 
-**The "resume evolution" framing is load-bearing for scope decisions, not just marketing.** The original notebook explicitly plans out how the resume bullet for this project should read differently at Month 1 vs Month 2 vs Month 3 — "it's still one project, but it keeps getting stronger." This means: it is more valuable for Phase 1 to actually ship (be deployed, be demoable) in a smaller/simpler form than to be more feature-complete but not deployed. **Deployment being the Phase 1 exit criterion is not a formality — it's the point.** Nothing is deployed yet; this should be treated as urgent once the core document/chat loop works, even ahead of polish.
+**The "no code in this document" convention** for design docs — actual code is a separate step.
 
-**The "no code in this document" convention.** Both the Phase 0 and Phase 1 design docs explicitly state they contain zero code — they're implementation-ready specs, and actual code is written from them as a separate step. If the next Claude is asked to produce another planning/design document before code, that's consistent with the project's established workflow, not a deviation from it.
-
-**Every completed task has been *manually or programmatically verified against real infrastructure*, not just written and assumed correct.** This shows up repeatedly: the DB migration was verified against a real (non-Docker) local Postgres 16 instance; the frontend auth flow was verified with an actual Playwright-driven Chromium browser; two real bugs were caught this way in Task 2.2 (cross-event-loop test engine, multi-byte-password bcrypt limit); Task 3A's `get_current_user` was verified not just via pytest but by manually invoking it against the real dev database with a real token; and **Task 3B Checkpoint 1's `Document` model was verified by actually inserting/updating a real row, actually triggering the unique-constraint rejection, and actually confirming `ON DELETE CASCADE` fires via a direct `psql` query — not just trusting the migration file looked right.** **This verification discipline is a core project value and should be continued for Checkpoint 2 onward** — don't just write the document service and its unit tests; actually exercise them against a real running database before considering it done.
+**Every completed task/checkpoint has been manually or programmatically verified against real infrastructure, not just written and assumed correct.** Real Postgres for migrations; real Chromium via Playwright for the frontend flow; Task 3A's dependency invoked against the real dev DB; **Checkpoint 1's unique constraint and cascade-delete confirmed via direct `psql` queries; Checkpoint 2's storage service exercised against the real filesystem and the real default `storage/uploads` directory, not just pytest's sandboxed `tmp_path`.** Continue this discipline for Checkpoint 3 — actually exercise the upload endpoint with real files against a real running backend, not just HTTP-client-driven pytest.
 
 **Rejected ideas worth remembering so they aren't re-proposed as if new:**
-- LangChain/LlamaIndex for the RAG pipeline (Phase 1) — rejected in favor of hand-rolled retrieval, specifically for interview-defensibility. (LlamaIndex is explicitly *not* rejected forever — it's earmarked for reconsideration at Phase 5.)
-- Qdrant as the Phase 1 vector store — rejected in favor of pgvector, to avoid running two databases when one user's collection doesn't need it. (Also not rejected forever — Phase 4+.)
-- GROBID in Phase 1 — rejected as unnecessary operational complexity (a whole separate Java service) before citation/metadata features actually need it.
-- Django REST Framework, Node/Express — rejected for the backend in favor of FastAPI.
-- Next.js, Vue — rejected for the frontend in favor of plain React + Vite + TS.
-- Redux/Zustand — rejected as premature state management; React Context is judged sufficient until it visibly isn't.
-- Pinning `react-router-dom` to an older, "less vulnerable-looking" version — tried and explicitly reverted, because it reintroduced 13 other vulnerabilities that predate that version's fixes; the flagged high-severity RSC advisory doesn't apply to this app's usage pattern (no RSC, no loaders/actions/SSR). **Don't re-attempt downgrading this package without re-verifying that reasoning still holds.**
-- A separate temporary `HomePage.tsx` component — rejected during Task 2.3 code review in favor of an inline placeholder inside `App.tsx`, specifically to avoid a throwaway file.
-- `passlib`/`python-jose`/`fastapi-users` (all suggested in the Phase 0 doc) — not actually used; the real implementation went with direct `bcrypt` + `PyJWT` instead, for a smaller and more auditable security surface.
-- **`OAuth2PasswordBearer` for `get_current_user`** (Task 3A) — rejected in favor of `HTTPBearer`, since the login endpoint's JSON-body contract doesn't match the OAuth2 password-flow's form-encoded assumption.
-- **A `status` column on `documents`** (Task 3B planning) — rejected for now; the original design doc's sketch anticipated async processing that doesn't exist yet in Document Management's scope. Revisit when a real processing task needs it.
-- **`python-magic` for upload content validation** (Task 3B planning) — not rejected forever, deliberately deferred to Phase 12; extension + Content-Type validation is the Phase-1-appropriate level of rigor.
-- **`relationship()` between `User` and `Document`** (Task 3B Checkpoint 1) — not rejected forever, deliberately deferred to whichever checkpoint first has a real consumer for `current_user.documents`, specifically because async SQLAlchemy's default lazy loading is a real runtime footgun (`MissingGreenlet`) and the correct loading strategy shouldn't be guessed at with nothing to test it against.
+- LangChain/LlamaIndex — rejected for interview-defensibility (LlamaIndex reconsider-at-Phase-5 exception).
+- Qdrant as Phase 1 vector store — rejected, pgvector instead (Phase 4+ exception).
+- GROBID in Phase 1 — rejected, too much operational complexity too early.
+- Django REST Framework, Node/Express — rejected for FastAPI.
+- Next.js, Vue — rejected for React + Vite + TS.
+- Redux/Zustand — rejected as premature.
+- Pinning `react-router-dom` to an older version — tried and reverted, reintroduced 13 other vulnerabilities.
+- A separate temporary `HomePage.tsx` — rejected in favor of an inline `App.tsx` placeholder.
+- `passlib`/`python-jose`/`fastapi-users` — not used; direct `bcrypt`+`PyJWT` instead.
+- `OAuth2PasswordBearer` for `get_current_user` — rejected in favor of `HTTPBearer`.
+- A `status` column on `documents` — rejected for now, no processing pipeline exists.
+- `python-magic` for upload validation — not rejected forever, deferred to Phase 12.
+- `relationship()` between `User` and `Document` — not rejected forever, deferred to whichever checkpoint first needs `current_user.documents`.
+- **Per-user storage subdirectories** (Task 3B Checkpoint 2) — considered and rejected in favor of a flat layout; UUID filenames already prevent collisions, so nesting would add complexity without a corresponding benefit at Phase 1's scale. Revisit only if a real operational reason (per-user quotas, selective backup/rsync) appears.
+- **`max_upload_size_mb` in the storage service** (Task 3B Checkpoint 2) — not rejected forever, deliberately placed at the endpoint layer instead (Checkpoint 3), since the storage service's job is to persist bytes it's given, not to decide whether the request should have been allowed in the first place.
 
-**Future plans explicitly named in source material but not yet scheduled to a specific phase number:** citation generator (APA/IEEE/ACM/BibTeX export), AI-generated mind maps per paper, a visual research timeline (e.g., Transformer 2017 → BERT 2018 → GPT-2 2019 → T5 2020 → ChatGPT 2022 → Llama 2023 → Qwen 2024), OCR support for scanned/image-only PDFs (explicitly out of scope for Phase 1 — the design doc says to validate on upload and fail gracefully with a clear error rather than attempting OCR), and DOCX/TXT upload support (now actually in scope for Task 3B, ahead of the original "Phase 1 is PDF-only" framing — Document Management explicitly covers PDF + DOCX + TXT upload).
+**Future plans not yet scheduled to a specific phase:** citation generator, AI mind maps, research timeline visualization, OCR for scanned PDFs (explicitly out of scope for Phase 1 — fail gracefully on upload instead), DOCX/TXT upload support (now actually in scope for Task 3B).
 
-**A note on the human collaborator's working style, inferred from the artifacts themselves (not stated as a rule, but consistent throughout):** they value being told *why*, not just *what* — every technology choice document is structured as why/adoption/alternatives/tradeoff, and the CHANGELOG documents *bugs found and fixed*, not just features shipped. They also push back constructively on proposed decisions before approving them (e.g. requesting justification for the deferred `relationship()` and the `VARCHAR` length choices in Checkpoint 1 before signing off) rather than rubber-stamping a plan — expect follow-up questions on non-trivial trade-offs, and answer them with the actual reasoning, not just a restated conclusion. Milestones are scoped independently (each checkpoint fully complete, tested, and approved before the next begins), and documentation sync is a required, separate final step of every milestone — not something to fold silently into the next task's diff. Continuing to write this way (design rationale before code, explicit tradeoffs, documenting real bugs found during verification rather than glossing over them, and treating docs as a first-class deliverable) is the default going forward, not something to ask permission for each time.
+**A note on the human collaborator's working style:** they value being told *why*, not just *what*, and push back constructively before approving non-trivial decisions (e.g., requested justification for the deferred `relationship()` and the `VARCHAR` length choices before signing off on Checkpoint 1) — expect follow-up questions and answer with actual reasoning, not a restated conclusion. They also actively check that documentation-sync requests match the real repository state rather than assuming an upload succeeded — worth independently verifying doc/repo consistency before any doc-sync task, not just trusting the premise that "the attached docs are current." Milestones are scoped independently (each checkpoint fully complete, tested, and approved before the next begins); documentation sync is a required, separate final step of every milestone.

@@ -10,9 +10,11 @@ Built incrementally, one phase and one task at a time. See
 
 ## Current status
 
-**Phase 1, Task 3B Checkpoint 1 complete: the `documents` table and
-`Document` model exist** (data layer only — no storage service,
-upload endpoint, or API route yet). Authentication (backend +
+**Phase 1, Task 3B Checkpoint 2 complete.** The `documents` table and
+`Document` model (Checkpoint 1) and the local-disk storage service
+(Checkpoint 2 — save/delete, UUID filenames, extension validation)
+both exist and are fully tested, but nothing HTTP-facing uses them
+yet — there is no upload endpoint. Authentication (backend +
 frontend) and the `get_current_user` dependency (Task 3A) are done.
 See `docs/PROJECT_CONTEXT.md` for full current state and
 `CHANGELOG.md` for the task-by-task history.

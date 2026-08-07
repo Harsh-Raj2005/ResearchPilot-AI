@@ -19,7 +19,7 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
 - [x] Task 3A — `get_current_user` protected-route dependency
 - [ ] Task 3B — Document management (backend)
   - [x] Checkpoint 1 — Document data layer (model + migration)
-  - [ ] Checkpoint 2 — Service layer (unit-testable without auth/HTTP)
-  - [ ] Checkpoint 3 — API layer (`get_current_user`'s first real consumer)
+  - [x] Checkpoint 2 — Storage service (local disk, UUID filenames, extension validation)
+  - [ ] Checkpoint 3 — Document upload API (`get_current_user`'s first real consumer)
   - [ ] Checkpoint 4 — Housekeeping (env, docker-compose, docs)
 - [ ] Task 3C — Document management (frontend) — planned at a high level only

@@ -172,3 +172,53 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   checkpointed plan — no storage service, no upload endpoint, no API
   route, no frontend change. `get_current_user` remains unconsumed by
   any route.
+
+### Task 3B — Checkpoint 2: Storage service
+- Added `app/services/storage_service.py`: pure file-I/O service with
+  no DB or FastAPI `UploadFile` dependency — `save_file()` takes raw
+  `bytes` + `original_filename` + `content_type`, so it's testable and
+  reusable independent of the web layer.
+- `SavedFile` (frozen dataclass) return type — field names match the
+  `Document` model's columns 1:1 (`stored_filename`, `storage_path`,
+  `original_filename`, `content_type`, `file_size_bytes`) so a future
+  document service can construct a `Document` from it without
+  renaming anything.
+- UUID-based stored filenames (`generate_stored_filename`) — never
+  derived from user input, avoiding path-traversal risk and
+  guaranteeing no collisions.
+- Extension-only validation (`validate_extension`) against
+  `settings.allowed_upload_extensions_list` — matches the
+  already-documented decision to skip `python-magic` content-sniffing
+  for Phase 1 (see Section 11 #18). A rejected extension raises before
+  the upload directory is even created — confirmed via a test that
+  checks zero filesystem footprint on rejection.
+- **Flat storage directory layout** (`<upload_dir>/<uuid>.<ext>`, no
+  per-user subdirectories) — this was the "Checkpoint 2 decision" the
+  schema comments flagged as not-yet-made; now made. UUID filenames
+  are already globally collision-proof, so nesting would add
+  complexity without solving a real problem yet.
+- `storage_path` records the actual path used at write time (not
+  recomputed from `stored_filename` + current config on each use) —
+  protects against a future `UPLOAD_DIR` config change breaking
+  resolution of files written under the old path.
+- `delete_file()` is idempotent — a missing file is treated as
+  already-deleted, not an error, so a caller retrying a cleanup
+  doesn't need to special-case "already gone." Genuine filesystem
+  failures still raise `StorageError`.
+- Added `upload_dir` and `allowed_upload_extensions` (+
+  `allowed_upload_extensions_list` property) to `app/core/config.py`,
+  matching the existing `cors_origins`/`cors_origins_list` pattern.
+- Added `tests/test_storage_service.py` — 18 tests (extension
+  validation, stored-filename uniqueness, directory auto-creation,
+  save/read-back round-trip, no-collision on duplicate original
+  filenames, rejection leaves no footprint, filesystem-error wrapping
+  for both save and delete, delete idempotency). 40/40 backend tests
+  passing overall (22 pre-existing + 18 new), zero regressions.
+- Verified against the real filesystem (not just pytest's `tmp_path`
+  sandbox): saved and deleted real files under the real default
+  `storage/uploads` directory, confirmed automatic directory creation,
+  confirmed no collision between two uploads sharing an original
+  filename, confirmed idempotent delete, cleaned up afterward.
+- Scope strictly limited to storage per this checkpoint — no DB
+  interaction (no `document_service.py` yet), no upload endpoint, no
+  API route, no frontend change.
