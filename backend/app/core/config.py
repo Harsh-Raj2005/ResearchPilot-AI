@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     # Comma-separated origins in the environment; parsed to a list here.
     cors_origins: str = "http://localhost:5173"
 
+    # --- Storage (Task 3B) ---
+    # Relative to the backend process's working directory. A Railway
+    # persistent volume mounted at deploy time is a follow-up, not a
+    # code change (see PROJECT_CONTEXT.md, Storage section).
+    upload_dir: str = "storage/uploads"
+    # Comma-separated, dot-prefixed. Extension-based validation only for
+    # Phase 1 (python-magic content-sniffing deliberately deferred to
+    # Phase 12 — see PROJECT_CONTEXT.md Section 11 #18).
+    allowed_upload_extensions: str = ".pdf,.docx,.txt"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -41,6 +51,14 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def allowed_upload_extensions_list(self) -> list[str]:
+        return [
+            ext.strip().lower()
+            for ext in self.allowed_upload_extensions.split(",")
+            if ext.strip()
+        ]
 
 
 @lru_cache
