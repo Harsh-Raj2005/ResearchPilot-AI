@@ -128,4 +128,19 @@ Return metadata for a single document owned by the current user.
 **Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Both cases return the identical response — the endpoint never reveals whether another user's document exists.
 **Response `422`** — `document_id` is not a valid UUID
 
-_Download and delete endpoints are not implemented yet — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._
+### `GET /documents/{document_id}/file`
+Return the actual stored file for a document owned by the current user.
+
+**Path parameter:** `document_id` (UUID)
+
+**Response `200`** — the raw file bytes.
+- `Content-Type` — the document's stored `content_type`
+- `Content-Disposition: attachment; filename="<original_filename>"` — always the user's original filename, never the internal UUID-based stored filename
+- `Accept-Ranges: bytes` — range requests work automatically (Starlette's built-in `FileResponse` behavior, not custom code)
+
+**Response `401`** — missing or invalid token
+**Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical to the detail endpoint's 404 behavior — indistinguishable from a nonexistent ID.
+**Response `422`** — `document_id` is not a valid UUID
+**Response `500`** — the document row exists and is owned by the caller, but its file is missing from disk (e.g. manually deleted, volume reset). The response never includes the server-side filesystem path.
+
+_Delete is not implemented yet — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._

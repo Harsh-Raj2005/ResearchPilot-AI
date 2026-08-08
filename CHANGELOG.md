@@ -379,3 +379,53 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `{document_id}` segment).
 - Download and delete endpoints remain unimplemented — this
   checkpoint is detail-lookup only, per its approved scope.
+
+### Document Management CRUD — Checkpoint 3: Document download
+- Added `GET /api/v1/documents/{document_id}/file` — authenticated,
+  ownership-enforced download of the actual stored file.
+- Extended `app/services/storage_service.py` with the smallest
+  appropriate read-side addition: `get_file_path()` (verifies the
+  file still exists on disk, returns a `Path`) and a new
+  `StoredFileNotFoundError` domain exception for the case where a
+  `Document` row survives but its file doesn't. No redesign — save
+  and delete are untouched.
+- Extended `app/services/document_service.py` with
+  `get_document_file_for_user()`, which **reuses**
+  `get_document_for_user()` for the existence+ownership check (no
+  duplicated `WHERE` clause) and then composes `storage_service`,
+  matching the same composition pattern `create_document` already
+  established in Task 3B Checkpoint 3.
+- **Router uses FastAPI's `FileResponse`**, which streams from disk
+  rather than loading the file into memory, and gets HTTP range-request
+  support (`Accept-Ranges: bytes`) for free from Starlette — no custom
+  streaming code written, per the explicit instruction to only rely on
+  framework behavior that's already there.
+- **`Content-Disposition` uses the document's `original_filename`**,
+  never the internal UUID-based `stored_filename` — confirmed via a
+  real downloaded file's headers, not just read from the code.
+- **A missing underlying file is a distinct `500`**, not folded into
+  the `404` used for "document not found" — deliberately different
+  situations (a server-side data-integrity problem vs. a client
+  request for something that was never theirs), and the `500` body
+  never includes the real filesystem path.
+- Added 9 new tests to `tests/test_documents_api.py`: owner downloads
+  their own file with correct bytes/content-type/filename,
+  unauthenticated rejected, nonexistent 404, cross-user 404,
+  wrong-owner/nonexistent responses byte-identical, malformed UUID
+  422, no internal path/filename leakage in response headers, missing-
+  underlying-file 500 (simulated by deleting the real file from disk
+  after upload, then requesting download), and an explicit
+  upload+list+detail regression check. 79/79 backend tests passing
+  overall (70 pre-existing + 9 new), zero regressions.
+- Verified against a real running backend: real file uploaded, real
+  download with byte-for-byte content match (`diff` against the
+  original), real headers inspected (`content-type`,
+  `content-disposition`, `accept-ranges`), real cross-user 404, real
+  malformed-UUID 422, and the missing-file 500 reproduced for real by
+  manually deleting the on-disk file and re-requesting it — confirmed
+  the response body never contains the real path. Confirmed via the
+  live OpenAPI schema that all four document routes
+  (`/upload`, `""`, `/{id}`, `/{id}/file`) are registered as distinct
+  paths with no conflicts.
+- Delete remains unimplemented — this checkpoint is download only,
+  per its approved scope.

@@ -7,14 +7,15 @@ Routers call this; it never touches HTTP directly (no HTTPException
 here — see app/api/documents.py for how storage_service's domain
 exceptions get translated to status codes).
 
-Three functions: create_document (Task 3B Checkpoint 3),
+Four functions: create_document (Task 3B Checkpoint 3),
 list_documents_for_user (Document Management CRUD Checkpoint 1 —
-listing), and get_document_for_user (Document Management CRUD
-Checkpoint 2 — detail). download/delete are still out of scope and
-will be added here when their own checkpoints arrive, following the
-same pattern as auth_service.py.
+listing), get_document_for_user (Checkpoint 2 — detail), and
+get_document_file_for_user (Checkpoint 3 — download, this checkpoint).
+delete is still out of scope and will be added here when its own
+checkpoint arrives, following the same pattern as auth_service.py.
 """
 import uuid
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -107,3 +108,33 @@ async def get_document_for_user(
         select(Document).where(Document.id == document_id, Document.user_id == user_id)
     )
     return result.scalar_one_or_none()
+
+
+async def get_document_file_for_user(
+    db: AsyncSession,
+    *,
+    document_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> tuple[Document, Path] | None:
+    """
+    Return the ownership-verified Document together with the Path to
+    its actual stored file, or None if no matching document exists
+    for this user.
+
+    Reuses get_document_for_user() for the existence+ownership check
+    rather than duplicating that WHERE clause — same indistinguishable-
+    404 guarantee as the detail endpoint. Composes storage_service
+    (matching create_document's existing pattern of this service being
+    where storage_service and Document meet).
+
+    Raises storage_service.StoredFileNotFoundError if the Document row
+    is real and owned by this user but its storage_path no longer
+    points to an actual file on disk — the router translates this to
+    a server error distinct from the "document not found" 404, per
+    the security requirement that these two situations not be conflated.
+    """
+    document = await get_document_for_user(db, document_id=document_id, user_id=user_id)
+    if document is None:
+        return None
+    file_path = storage_service.get_file_path(document.storage_path)
+    return document, file_path

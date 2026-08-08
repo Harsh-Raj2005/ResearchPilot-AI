@@ -454,3 +454,140 @@ async def test_upload_and_list_still_work_after_detail_endpoint_added(client: As
     list_response = await client.get("/api/v1/documents", headers=headers)
     assert list_response.status_code == 200
     assert len(list_response.json()) == 1
+
+
+# --- GET /documents/{document_id}/file (Document Management CRUD, Checkpoint 3: download) ---
+
+
+async def test_download_document_returns_owner_their_file(client: AsyncClient):
+    headers = await _auth_headers(client, email="downloadowner@example.com", username="downloadowner")
+    content = b"%PDF-1.4 the actual file contents"
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("report.pdf", content, "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    response = await client.get(f"/api/v1/documents/{document_id}/file", headers=headers)
+
+    assert response.status_code == 200
+    assert response.content == content
+    assert response.headers["content-type"] == "application/pdf"
+    assert "report.pdf" in response.headers.get("content-disposition", "")
+
+
+async def test_download_document_requires_authentication(client: AsyncClient):
+    response = await client.get(f"/api/v1/documents/{uuid.uuid4()}/file")
+    assert response.status_code == 401
+
+
+async def test_download_document_nonexistent_returns_404(client: AsyncClient):
+    headers = await _auth_headers(client, email="downloadmissing@example.com", username="downloadmissing")
+    response = await client.get(f"/api/v1/documents/{uuid.uuid4()}/file", headers=headers)
+    assert response.status_code == 404
+
+
+async def test_download_document_cannot_retrieve_another_users_file(client: AsyncClient):
+    headers_a = await _auth_headers(client, email="downloada@example.com", username="downloada")
+    headers_b = await _auth_headers(client, email="downloadb@example.com", username="downloadb")
+
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("private.pdf", b"private content", "application/pdf")},
+        headers=headers_a,
+    )
+    document_id = upload.json()["id"]
+
+    response = await client.get(f"/api/v1/documents/{document_id}/file", headers=headers_b)
+    assert response.status_code == 404
+
+
+async def test_download_document_wrong_owner_indistinguishable_from_nonexistent(client: AsyncClient):
+    headers_a = await _auth_headers(client, email="downloadindista@example.com", username="downloadindista")
+    headers_b = await _auth_headers(client, email="downloadindistb@example.com", username="downloadindistb")
+
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("owned.pdf", b"owned", "application/pdf")},
+        headers=headers_a,
+    )
+    owned_id = upload.json()["id"]
+
+    wrong_owner_response = await client.get(f"/api/v1/documents/{owned_id}/file", headers=headers_b)
+    nonexistent_response = await client.get(f"/api/v1/documents/{uuid.uuid4()}/file", headers=headers_b)
+
+    assert wrong_owner_response.status_code == nonexistent_response.status_code == 404
+    assert wrong_owner_response.json() == nonexistent_response.json()
+
+
+async def test_download_document_invalid_id_format_rejected(client: AsyncClient):
+    headers = await _auth_headers(client, email="downloadbadid@example.com", username="downloadbadid")
+    response = await client.get("/api/v1/documents/not-a-uuid/file", headers=headers)
+    assert response.status_code == 422
+
+
+async def test_download_document_does_not_expose_internal_paths_on_success(client: AsyncClient):
+    headers = await _auth_headers(client, email="downloadleak@example.com", username="downloadleak")
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("paper.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    response = await client.get(f"/api/v1/documents/{document_id}/file", headers=headers)
+
+    # No response header may contain the on-disk upload directory path
+    # or the internal UUID-based stored filename — only the original
+    # filename should appear (in Content-Disposition).
+    content_disposition = response.headers.get("content-disposition", "")
+    assert "paper.pdf" in content_disposition
+    for header_value in response.headers.values():
+        assert str(Path(settings.upload_dir)) not in header_value
+
+
+async def test_download_document_missing_underlying_file_returns_server_error(
+    client: AsyncClient, tmp_path
+):
+    headers = await _auth_headers(client, email="downloadmissingfile@example.com", username="downloadmissingfile")
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("willvanish.pdf", b"soon gone", "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    # Simulate DB/filesystem drift: the row survives, but the file
+    # underneath it is gone (e.g. manually deleted, volume reset).
+    upload_dir = Path(settings.upload_dir)
+    stored_files = list(upload_dir.glob("*.pdf"))
+    assert len(stored_files) == 1
+    stored_files[0].unlink()
+
+    response = await client.get(f"/api/v1/documents/{document_id}/file", headers=headers)
+
+    assert response.status_code == 500
+    # The 500 body must not leak the real filesystem path.
+    assert str(stored_files[0]) not in response.text
+
+
+async def test_upload_list_detail_still_work_after_download_endpoint_added(client: AsyncClient):
+    """Regression check: adding GET /{document_id}/file must not change upload/list/detail."""
+    headers = await _auth_headers(client, email="downloadregression@example.com", username="downloadregression")
+
+    upload_response = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("regress2.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+    assert upload_response.status_code == 201
+    document_id = upload_response.json()["id"]
+
+    list_response = await client.get("/api/v1/documents", headers=headers)
+    assert list_response.status_code == 200
+    assert len(list_response.json()) == 1
+
+    detail_response = await client.get(f"/api/v1/documents/{document_id}", headers=headers)
+    assert detail_response.status_code == 200
+    assert detail_response.json()["id"] == document_id

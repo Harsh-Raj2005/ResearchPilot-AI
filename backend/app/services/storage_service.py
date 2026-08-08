@@ -3,14 +3,18 @@ Storage service.
 
 Task 3B Checkpoint 2 scope: local-disk file I/O only. No database
 access, no HTTP/UploadFile knowledge, no upload endpoint — this
-module knows how to save and delete bytes on disk and nothing else.
-Routers call the (not-yet-built) document service, which calls this;
-this module never talks to the DB or raises HTTPException directly,
-matching the project's service-layer conventions.
+module knows how to save, delete, and (as of Document Management
+Checkpoint 3) locate bytes on disk, and nothing else. Routers call
+document_service, which calls this; this module never talks to the
+DB or raises HTTPException directly, matching the project's
+service-layer conventions.
 
 Deliberately decoupled from FastAPI's UploadFile: save_file() takes
 raw bytes + a filename + a content type, so this module is testable
-and reusable independent of the web framework.
+and reusable independent of the web framework. get_file_path()
+returns a Path, not file content — FastAPI's FileResponse streams
+directly from that path, so this module never loads a downloaded
+file's bytes into memory either.
 """
 import uuid
 from dataclasses import dataclass
@@ -29,6 +33,16 @@ class StorageError(Exception):
     caller's control (disk full, permission denied, etc.) — wraps the
     underlying OSError so callers deal with one domain exception
     rather than needing to know every OSError subtype that might occur.
+    """
+
+
+class StoredFileNotFoundError(Exception):
+    """
+    Raised when a storage_path that should point to a real file
+    doesn't — e.g. a Document row survives but the file was deleted
+    outside the app, or a volume was reset. A legitimate DB/filesystem
+    drift, not a programming error, so it's its own exception rather
+    than an assertion or a bare FileNotFoundError leaking out.
     """
 
 
@@ -135,3 +149,21 @@ def delete_file(storage_path: str) -> None:
         Path(storage_path).unlink(missing_ok=True)
     except OSError as exc:
         raise StorageError(f"Could not delete file {storage_path}: {exc}") from exc
+
+
+def get_file_path(storage_path: str) -> Path:
+    """
+    Return the Path to a previously-saved file, after verifying it
+    actually exists on disk.
+
+    Raises StoredFileNotFoundError if storage_path doesn't correspond
+    to a real file — callers (document_service) must handle this
+    explicitly rather than let a confusing low-level FileNotFoundError
+    surface from deep inside a FastAPI FileResponse. Deliberately just
+    a path lookup, not a read: FastAPI's FileResponse streams from the
+    path itself, so this function never loads file content into memory.
+    """
+    path = Path(storage_path)
+    if not path.is_file():
+        raise StoredFileNotFoundError(f"Stored file not found: {storage_path}")
+    return path

@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management) is fully complete. Document Management CRUD is 2-of-4 pieces complete: **List (Checkpoint 1) and Detail (Checkpoint 2, this checkpoint)** both work. A logged-in user can upload a document, list their own documents, and retrieve a single document's metadata by ID — with a 404 for anything not theirs, indistinguishable from a nonexistent ID. Download and delete remain unimplemented. Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management) is fully complete. Document Management CRUD is 3-of-4 pieces complete: **List, Detail, and Download (this checkpoint)** all work. A logged-in user can upload a document, list their own documents, retrieve a single document's metadata, and now download the actual file — with the same ownership isolation and indistinguishable-404 behavior as detail. Delete remains unimplemented. Nothing has been deployed yet.
 
 ---
 
@@ -74,12 +74,12 @@ Refresh page ──► chat history persists
 Log out and back in ──► document and chat history still there
 ```
 
-### End-to-end system flow for upload → chat (design target — **upload + list + detail implemented, rest not**)
+### End-to-end system flow for upload → chat (design target — **upload + list + detail + download implemented, rest not**)
 ```
 1. Frontend: POST /api/v1/documents/upload (multipart file)              ✅ backend done (Task 3B Checkpoint 3)
 2. Backend: save file to storage, insert `documents` row (status=uploading),
    enqueue background job, return document_id immediately (202 Accepted)  ⚠️ synchronous, no status/worker (see Section 6)
-3. Frontend: redirects to dashboard, polls GET /documents/{id}/status     ❌ not built (but GET /documents/{id} metadata ✅ now exists)
+3. Frontend: redirects to dashboard, polls GET /documents/{id}/status     ❌ not built (but GET /documents/{id} metadata ✅ exists)
 4. Worker (Arq): extract text, chunk, embed, status -> ready              ❌ not built
 5. Frontend: status becomes "ready", user opens document page             ❌ not built (but GET /documents listing ✅ exists)
 6. User sends chat message                                                ❌ not built
@@ -92,16 +92,17 @@ Log out and back in ──► document and chat history still there
 2. **Login (JWT access token issuance)** — backend endpoint + frontend form, fully working and tested.
 3. **Frontend auth state** — React Context holds the access token and email, persisted to `localStorage`.
 4. **Health check endpoint** — real DB round-trip check, returns 503 if DB unreachable.
-5. **`get_current_user` dependency** — the project's first protected-route wiring, live on all three document routes.
+5. **`get_current_user` dependency** — the project's first protected-route wiring, live on all four document routes.
 6. **Document data layer** (`app/models/document.py`) — the `documents` table and `Document` model.
-7. **Storage service** (`app/services/storage_service.py`) — local-disk file save/delete, UUID filenames, extension validation.
+7. **Storage service** (`app/services/storage_service.py`) — local-disk file save/delete, UUID filenames, extension validation, and — new this checkpoint — file location (`get_file_path()`).
 8. **Authenticated document upload** (`POST /api/v1/documents/upload`) — composes `storage_service` + `Document` via `document_service.py`.
 9. **Document management housekeeping** — `.env.example`, `.gitignore`, `docker-compose.yml` volume for uploads persistence.
 10. **Authenticated document listing** (`GET /api/v1/documents`) — paginated, own documents only, newest first.
-11. **Authenticated document detail** (`GET /api/v1/documents/{document_id}`, new this checkpoint) — single-document metadata for the authenticated user's own document. `document_service.py` extended with `get_document_for_user()`, which combines the existence check and the ownership check into one `WHERE id = ... AND user_id = ...` query — so a wrong-owner request and a nonexistent-ID request are structurally indistinguishable, not just coincidentally the same status code. No model or schema change needed — `Document.id` and `DocumentResponse` were already exactly right.
+11. **Authenticated document detail** (`GET /api/v1/documents/{document_id}`) — single-document metadata, indistinguishable 404 for not-found/not-owned.
+12. **Authenticated document download** (`GET /api/v1/documents/{document_id}/file`, new this checkpoint) — streams the actual stored file via FastAPI's `FileResponse`, with the correct `content_type` and a `Content-Disposition` header using the original filename (never the internal UUID-based stored name). Same ownership isolation and indistinguishable-404 behavior as detail, reusing `get_document_for_user()` rather than a second query. A document row that exists but whose file is missing from disk (DB/filesystem drift) returns a distinct `500`, never leaking the filesystem path.
 
 ### Features NOT yet implemented (in build order, per the Phase 1 design doc)
-- **Document download and delete endpoints** — the two remaining pieces of full CRUD.
+- **Document delete endpoint** — the last piece of full CRUD. Not yet scheduled to a specific checkpoint.
 - Background worker (Arq) for text extraction → chunking → embedding.
 - `document_chunks` table + pgvector column + similarity search.
 - Chat session + chat message models and endpoints.
@@ -145,13 +146,13 @@ Log out and back in ──► document and chat history still there
 **Vector store: `pgvector`, not Qdrant, for Phase 1.** One database instead of two. Qdrant deliberately deferred to Phase 4+.
 
 ### Authentication
-**JWT (access-token only)**, `PyJWT` direct, `bcrypt` direct. `get_current_user` uses `HTTPBearer` (not `OAuth2PasswordBearer`) since `/auth/login` accepts JSON, not OAuth2's form-encoded contract. **Now live on all three document routes** (`POST /upload`, `GET ""`, `GET /{document_id}`) — the third consumer, still zero modification to the dependency itself.
+**JWT (access-token only)**, `PyJWT` direct, `bcrypt` direct. `get_current_user` uses `HTTPBearer` (not `OAuth2PasswordBearer`) since `/auth/login` accepts JSON, not OAuth2's form-encoded contract. **Now live on all four document routes** (`POST /upload`, `GET ""`, `GET /{id}`, `GET /{id}/file`) — the fourth consumer, still zero modification to the dependency itself.
 
 ### AI pipeline
 **Not built yet.** PyMuPDF for extraction, hand-rolled RAG (no LangChain/LlamaIndex), pgvector for retrieval — all planned, none implemented.
 
 ### Storage
-**Local disk, fully operational, with persistent Docker storage.** Unchanged this checkpoint — detail lookup, like list, reads only `Document` rows (metadata), never touches `storage_service` or the filesystem. `DocumentResponse` still never includes `storage_path`, so there's structurally nothing for this endpoint to leak on that front even if it wanted to.
+**Local disk, fully operational, with persistent Docker storage.** **Extended this checkpoint** with a read-side operation: `storage_service.get_file_path(storage_path) -> Path`, which verifies the file exists on disk and returns its `Path` (never reads content into memory — `FileResponse` streams directly from the path). Raises the new `StoredFileNotFoundError` if the path doesn't correspond to a real file — a legitimate DB/filesystem drift case (e.g. manual deletion, volume reset), not a programming error. `save_file()` and `delete_file()` are unchanged.
 
 ### Deployment (planned, nothing live yet)
 ```
@@ -190,16 +191,16 @@ pytest>=8.2.0
 pytest-asyncio>=0.23.0
 httpx>=0.27.0
 ```
-**No new dependency this checkpoint** — the detail endpoint uses only SQLAlchemy's `select()`/`.where()` (already in use), and FastAPI's automatic path-parameter type coercion (`document_id: uuid.UUID` in the route signature — FastAPI/Pydantic validates the URL segment as a UUID automatically, returning `422` on anything that doesn't parse, with zero extra code).
+**No new dependency this checkpoint** — `FileResponse` is part of `fastapi.responses` (already available via the existing FastAPI dependency), and range-request support (`Accept-Ranges: bytes`) comes from Starlette's `FileResponse` implementation for free, not from any new package.
 
 ### Frontend
 Unchanged. `react`, `react-dom`, `react-router-dom` + dev tooling.
 
 ### Database
-PostgreSQL 16. Two tables: `users`, `documents`. **No schema change this checkpoint** — detail lookup is a read query against the existing `documents` table, keyed on the existing primary key.
+PostgreSQL 16. Two tables: `users`, `documents`. **No schema change this checkpoint** — download reads existing `Document` rows exactly as detail does; the file itself is served from disk, not the database.
 
 ### File storage
-Unchanged. `app/services/storage_service.py`, not touched this checkpoint.
+`app/services/storage_service.py` — **extended this checkpoint** with `get_file_path()`. See Section 3.
 
 ### Environment management
 `pydantic-settings` (`app/core/config.py`). **No new settings this checkpoint.**
@@ -216,7 +217,7 @@ researchpilot/
 ├── README.md
 ├── docker-compose.yml
 ├── docs/
-│   ├── API.md                          # now documents GET /documents/{id} (this checkpoint)
+│   ├── API.md                          # now documents GET /documents/{id}/file (this checkpoint)
 │   ├── ARCHITECTURE.md
 │   └── ROADMAP.md
 ├── backend/
@@ -233,25 +234,25 @@ researchpilot/
 │   │   ├── main.py
 │   │   ├── api/
 │   │   │   ├── auth.py
-│   │   │   ├── documents.py           # POST /upload, GET "" (list), GET /{id} (detail, new this checkpoint)
+│   │   │   ├── documents.py           # POST /upload, GET "" (list), GET /{id} (detail), GET /{id}/file (download, new this checkpoint)
 │   │   │   └── health.py
 │   │   ├── core/
 │   │   │   ├── config.py
 │   │   │   ├── security.py
-│   │   │   └── deps.py                # get_current_user — now consumed by 3 routes
+│   │   │   └── deps.py                # get_current_user — now consumed by 4 routes
 │   │   ├── db/
 │   │   │   └── session.py
 │   │   ├── models/
 │   │   │   ├── base.py
 │   │   │   ├── user.py
-│   │   │   └── document.py            # unchanged — id (UUID) already existed, reused for the path param
+│   │   │   └── document.py            # unchanged — storage_path already existed, reused for the file lookup
 │   │   ├── schemas/
 │   │   │   ├── auth.py
-│   │   │   └── document.py            # unchanged — DocumentResponse reused as-is for detail too
+│   │   │   └── document.py            # unchanged — download doesn't use DocumentResponse (raw file body, not JSON)
 │   │   ├── services/
 │   │   │   ├── auth_service.py
-│   │   │   ├── document_service.py    # extended again: get_document_for_user (new, this checkpoint)
-│   │   │   └── storage_service.py     # unchanged, not touched this checkpoint
+│   │   │   ├── document_service.py    # extended again: get_document_file_for_user (new, this checkpoint)
+│   │   │   └── storage_service.py     # extended: get_file_path + StoredFileNotFoundError (new, this checkpoint)
 │   │   └── workers/
 │   ├── pyproject.toml
 │   └── tests/
@@ -259,27 +260,27 @@ researchpilot/
 │       ├── test_auth.py               # 12 tests
 │       ├── test_deps.py               # 5 tests
 │       ├── test_document_model.py     # 5 tests
-│       ├── test_documents_api.py      # 30 tests (10 upload + 12 list + 8 new detail)
+│       ├── test_documents_api.py      # 39 tests (10 upload + 12 list + 8 detail + 9 new download)
 │       └── test_storage_service.py    # 18 tests
 └── frontend/                          # unchanged this checkpoint
 ```
 
 ### Purpose of every major folder
-Unchanged from the prior sync — see prior sections. **This checkpoint modified exactly two application files** (`app/api/documents.py`, `app/services/document_service.py`) plus their shared test file — same footprint pattern as the listing checkpoint before it.
+Unchanged from the prior sync — see prior sections. **This checkpoint modified exactly three application files** (`app/api/documents.py`, `app/services/document_service.py`, `app/services/storage_service.py`) plus their shared test file — the first checkpoint in this series to touch `storage_service.py`, and the reason is a genuine new capability (locating a file for reading), not a redesign of anything existing.
 
 ---
 
 ## 6. DATABASE DESIGN
 
-**Unchanged this checkpoint.** Two tables: `users`, `documents`. No migration — detail lookup is a read query against the existing schema, keyed on the existing UUID primary key.
+**Unchanged this checkpoint.** Two tables: `users`, `documents`. No migration — download reads the existing `documents` table exactly as detail does; `storage_path` (already a column since Checkpoint 1) is what makes the file locatable.
 
-**One clarification worth recording:** this is the first document endpoint where a single, specific row is requested by ID rather than a filtered collection. The ownership-isolation requirement is enforced identically in spirit to listing (`WHERE ... user_id = ...`) but now combined with an equality match on `id` in the *same* `WHERE` clause — not a separate "fetch then check" step. This is a meaningfully stronger security posture than it might look: there is no intermediate state where the service holds a `Document` object belonging to the wrong user, even transiently. Verified both by a dedicated cross-user test and by confirming the wrong-owner and nonexistent-ID responses are byte-identical, not merely same-status-code.
+**One clarification worth recording:** this is the first document endpoint where the response is not a `DocumentResponse` (or a list of them) at all — the body is the raw file. This means `response_model` is intentionally omitted on this route; FastAPI/Pydantic never touches the response body, and `Content-Type`/`Content-Disposition` are set directly by `FileResponse`. Worth remembering as the pattern for any future binary-response endpoint in this project.
 
 ---
 
 ## 7. IMPLEMENTED FEATURES
 
-*(Tasks 1 through Document Management CRUD Checkpoint 1 — see prior syncs for full detail; summarized here, unchanged.)*
+*(Tasks 1 through Document Management CRUD Checkpoint 2 — see prior syncs for full detail; summarized here, unchanged.)*
 
 - **Task 1** — Project skeleton.
 - **Task 2.1** — Database foundation.
@@ -291,25 +292,27 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 - **Task 3B Checkpoint 3** — Document upload API. 10 tests.
 - **Task 3B Checkpoint 4** — Housekeeping.
 - **Document Management CRUD Checkpoint 1** — List documents. 12 tests.
+- **Document Management CRUD Checkpoint 2** — Document detail. 8 tests.
 
-### Document Management CRUD — Checkpoint 2: Document detail (this checkpoint)
-**What it does:** `GET /api/v1/documents/{document_id}` — authenticated, ownership-enforced lookup of a single document's metadata.
+### Document Management CRUD — Checkpoint 3: Document download (this checkpoint)
+**What it does:** `GET /api/v1/documents/{document_id}/file` — authenticated, ownership-enforced download of the actual stored file.
 **Key decisions:**
-- **Combined `WHERE id = :id AND user_id = :user_id` in one query**, not "fetch by id, then check `document.user_id == current_user.id` in Python." This was explicitly required by the task, and independently the right call: it means there's no code path where the service ever loads another user's row into application memory at all, and the "don't reveal whether another user's document exists" requirement falls out structurally rather than needing a separate rule to remember. Verified with a test that asserts the wrong-owner and nonexistent-ID response bodies are identical, not just same status code.
-- **`document_service.py` extended a third time** (now `create_document`, `list_documents_for_user`, `get_document_for_user`) rather than a parallel service — consistent with Checkpoint 1's explicit instruction and this project's established one-service-per-resource pattern (mirrors `auth_service.py`).
-- **No new schema.** `DocumentResponse` reused directly as `response_model=DocumentResponse` for a single object, exactly as it's used as `response_model=list[DocumentResponse]` for the list endpoint — same schema, two different response shapes, zero duplication.
-- **`document_id: uuid.UUID` as a typed path parameter** — FastAPI/Pydantic validates the URL segment automatically; a malformed (non-UUID) ID gets a `422` with zero custom validation code. Confirmed by a dedicated test rather than assumed from FastAPI's general reputation for doing this.
-- **Route ordering confirmed non-conflicting**: `/upload` (static) and `""` (list) are both registered before `/{document_id}` (dynamic) in the router, and — more importantly — verified via the live OpenAPI schema and a real manual upload request that `/documents/upload` is never captured by the dynamic segment.
-**Files:** `backend/app/api/documents.py` (modified — new route added), `backend/app/services/document_service.py` (modified — new function added), `backend/tests/test_documents_api.py` (modified — 8 new tests appended).
-**Tests:** 8 new — owner retrieves own document, unauthenticated rejected, nonexistent ID → 404, cross-user request → 404, wrong-owner and nonexistent-ID responses byte-identical, response doesn't leak internal fields, malformed ID → 422, explicit upload+list regression check. 70/70 across the full suite, zero regressions.
-**Verified beyond pytest:** two real users, real upload, real retrieval of the owner's own document with correct fields via `curl`; real cross-user 404; real nonexistent-ID 404 with an identical response body (diffed, not eyeballed); real 401 with no token; live OpenAPI schema confirmed three distinct, non-conflicting routes.
-**Not yet done:** Download and delete endpoints. No frontend consumes this endpoint yet.
+- **`storage_service.py` extended, not redesigned.** Added exactly one new function (`get_file_path`) and one new exception (`StoredFileNotFoundError`) — the smallest addition that makes download possible. `save_file`/`delete_file` untouched. This was an explicit instruction, and independently the right scope: no reason to touch working code for an unrelated capability.
+- **`document_service.py` extended a fourth time** with `get_document_file_for_user()`, which **reuses `get_document_for_user()`** for the existence+ownership check rather than duplicating that `WHERE` clause — same indistinguishable-404 guarantee, zero duplicated query logic. This mirrors how `create_document` already composes `storage_service`; download is the second instance of a service composing another service.
+- **`FileResponse` (Starlette, via `fastapi.responses`) used to stream the file** — never loads file bytes into application memory, and gets HTTP range-request support (`Accept-Ranges: bytes`, confirmed in a real response header) for free, with zero custom streaming code. Exactly matches the instruction to rely on existing framework behavior rather than build anything speculative.
+- **`Content-Disposition` uses `document.original_filename`**, never `stored_filename` — confirmed by actually downloading a file and inspecting the header, not just by reading the code.
+- **A missing underlying file is a `500`, deliberately not folded into the `404` used for "not found."** These are different situations: a `404` means "this isn't yours or doesn't exist" (a normal, expected outcome the client can act on); a `500` for a legitimately-owned-but-file-missing document means "something is wrong on the server side" (DB/filesystem drift the caller can't fix). Verified by actually deleting a real uploaded file from disk and confirming the distinct status code and a path-free error body.
+- **No `response_model`** on this route — the body is the file itself; `DocumentResponse` doesn't apply here and wasn't forced to.
+**Files:** `backend/app/services/storage_service.py` (modified — `get_file_path`, `StoredFileNotFoundError`), `backend/app/services/document_service.py` (modified — `get_document_file_for_user`), `backend/app/api/documents.py` (modified — new route, `FileResponse` import), `backend/tests/test_documents_api.py` (modified — 9 new tests appended).
+**Tests:** 9 new — owner downloads their own file with correct bytes/content-type/filename, unauthenticated rejected, nonexistent 404, cross-user 404, wrong-owner/nonexistent responses byte-identical, malformed UUID 422, no internal path/filename leakage in headers, missing-underlying-file 500 (simulated by deleting the real file after upload), and an explicit upload+list+detail regression check. 79/79 across the full suite, zero regressions.
+**Verified beyond pytest:** real file uploaded and downloaded against a real running server, byte-for-byte content match confirmed via `diff`; real response headers inspected (`content-type: application/pdf`, `content-disposition: attachment; filename="dltest.pdf"`, `accept-ranges: bytes`); real cross-user and nonexistent-ID 404s; real malformed-UUID 422; the missing-file `500` reproduced for real by deleting the on-disk file directly and re-requesting — confirmed the error body never contains the real filesystem path; live OpenAPI schema confirmed all four document routes are distinct with no path conflicts.
+**Not yet done:** Delete endpoint. No frontend consumes any document endpoint yet.
 
 ---
 
 ## 8. AUTHENTICATION FLOW
 
-**Unchanged this checkpoint** except: `get_current_user` is now consumed by three routes, still with zero modification to the dependency itself.
+**Unchanged this checkpoint** except: `get_current_user` is now consumed by four routes, still with zero modification to the dependency itself.
 
 ---
 
@@ -324,32 +327,36 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 | POST | `/api/v1/auth/login` | Exchange credentials for a JWT | No |
 | POST | `/api/v1/documents/upload` | Upload a PDF/DOCX/TXT (multipart, max 20MB) | **Yes** |
 | GET | `/api/v1/documents` | List the current user's documents, paginated | **Yes** |
-| GET | `/api/v1/documents/{document_id}` | Get one document's metadata | **Yes** — **new this checkpoint** |
+| GET | `/api/v1/documents/{document_id}` | Get one document's metadata | **Yes** |
+| GET | `/api/v1/documents/{document_id}/file` | Download the actual stored file | **Yes** — **new this checkpoint** |
 
-`docs/API.md` updated this checkpoint with the full `GET /documents/{document_id}` contract.
+`docs/API.md` updated this checkpoint with the full `GET /documents/{document_id}/file` contract (response headers, all error cases).
 
 ### Still NOT implemented
 | Method | Route | Purpose |
 |---|---|---|
 | POST | `/api/v1/auth/refresh` | Exchange refresh token for new access token |
-| GET | `/api/v1/documents/{id}/file` | Return the actual stored file |
 | DELETE | `/api/v1/documents/{id}` | Delete a document |
 
 ---
 
 ## 10. CODING CONVENTIONS
 
-**Unchanged this checkpoint** — see prior sections. `GET /documents/{document_id}` follows every established convention exactly: thin router (path-param type coercion only, courtesy of FastAPI/Pydantic), service owns the query and the combined existence+ownership filter, no direct DB access outside `services/`. **One addition worth recording:** typed path parameters (`document_id: uuid.UUID`) are the established pattern for ID-based routes going forward — no manual `try: UUID(...)` parsing needed anywhere in this codebase.
+**Unchanged this checkpoint** — see prior sections. `GET /documents/{document_id}/file` follows every established convention: thin router, service owns the ownership query and composes `storage_service`, no direct DB or filesystem access outside `services/`. **One addition worth recording:** binary/file-serving routes omit `response_model` — there's nothing for Pydantic to validate when the body is raw file bytes, and forcing a schema onto this shape would be the wrong kind of consistency.
 
 ---
 
 ## 11. IMPORTANT DESIGN DECISIONS
 
-*(1–33 unchanged from the prior sync. New decisions below.)*
+*(1–35 unchanged from the prior sync. New decisions below.)*
 
-34. **Ownership + existence combined into one query for single-resource lookups** (`get_document_for_user`), rather than fetching by ID first and checking ownership afterward. Treated as a mandatory security pattern for this project, not a style preference: it's structurally impossible for a wrong-owner document to ever be loaded into memory, and the "don't reveal existence" requirement is a natural consequence of the query shape rather than a separate rule that could be forgotten in a future endpoint. This is the pattern to replicate for download and delete when their checkpoints arrive.
+36. **`storage_service.py`'s read-side addition (`get_file_path`) returns a `Path`, not file content.** `FileResponse` streams directly from the path; the service layer never holds file bytes in memory for a download, matching the same "don't load large things into memory unnecessarily" principle already established (implicitly) by `save_file` writing straight to disk rather than buffering.
 
-35. **Typed UUID path parameters, validated by FastAPI/Pydantic automatically.** `document_id: uuid.UUID` in the route signature means a malformed ID returns `422` with zero custom code — confirmed by test, not assumed. Establishes the pattern for any future `/{id}`-shaped route in this project.
+37. **A missing underlying file (DB row exists, file doesn't) is a distinct `500`, not a `404`.** `404` communicates "not yours / doesn't exist" — a normal client-actionable outcome. `500` communicates "something is wrong on the server" — DB/filesystem drift the client can't do anything about. Conflating the two would either leak information (a `404` implying "maybe it exists, maybe not" when actually something is broken) or mislabel a server problem as a client error. The `500` body is still scrubbed of the real filesystem path.
+
+38. **`document_service.get_document_file_for_user()` composes `get_document_for_user()` rather than re-querying.** The second instance in this codebase of one service function calling another (the first was `create_document` calling `storage_service.save_file`) — now established as the normal pattern for building a more specific operation out of an existing one, rather than duplicating query logic.
+
+39. **`Content-Disposition` always uses the original filename, never the stored UUID-based filename.** A direct, deliberate continuation of the "storage details are internal, only display-facing values are user-visible" principle already established for `DocumentResponse` — now also true of the one place in this API where a filename appears in an HTTP header rather than a JSON body.
 
 ---
 
@@ -364,11 +371,12 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 - Task 3B Checkpoints 1–4 — Document data layer, storage service, upload API, housekeeping. **Task 3B fully complete.**
 - **Document Management CRUD Checkpoint 1 — List documents. Complete.**
 - **Document Management CRUD Checkpoint 2 — Document detail. Complete.**
+- **Document Management CRUD Checkpoint 3 — Document download. Complete.**
 
-**Git state:** per the user, all prior checkpoints through Document Management CRUD Checkpoint 1 have been committed and pushed. **This checkpoint's changes are implemented, tested, and verified but explicitly NOT yet committed or pushed** — per this checkpoint's own instructions. Recommended single commit message is in this checkpoint's completion report.
+**Git state:** per the user, all prior checkpoints through Document Management CRUD Checkpoint 2 have been committed and pushed. **This checkpoint's changes are implemented, tested, and verified but explicitly NOT yet committed or pushed** — per this checkpoint's own instructions. Recommended single commit message is in this checkpoint's completion report.
 
 **Not started at all:**
-- Document download, delete endpoints.
+- Document delete endpoint.
 - Background worker, chunking, embeddings, pgvector usage.
 - Everything related to chat.
 - All frontend pages/components beyond auth.
@@ -376,20 +384,21 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None. Every checkpoint through this one is fully working and verified for its own scope. Document Management CRUD as a whole is 2-of-4 pieces complete (list, detail; download/delete remain).
+**Partially completed work:** None. Every checkpoint through this one is fully working and verified for its own scope. Document Management CRUD as a whole is 3-of-4 pieces complete (list, detail, download; delete remains).
 
 ---
 
 ## 13. NEXT TASK
 
-**No checkpoint is currently in progress or pre-planned.** The natural continuation, following this checkpoint's own pattern (and the same pattern list→detail already followed), is **Document Management CRUD Checkpoint 3: document download** (`GET /documents/{id}/file` — stream the actual stored file, same ownership-isolation requirement and combined-query pattern established in Checkpoint 2, first endpoint that actually touches `storage_service` for a read rather than a write). Delete would follow as its own checkpoint after that.
+**No checkpoint is currently in progress or pre-planned.** The natural continuation, following this checkpoint's own pattern (list → detail → download), is **Document Management CRUD Checkpoint 4: document delete** (`DELETE /documents/{id}` — remove both the DB row and the on-disk file, same ownership-isolation requirement and combined-query pattern established in Checkpoint 2/3, reusing `get_document_for_user()` for the lookup and `storage_service.delete_file()` — already implemented and idempotent — for the filesystem side). This would complete full Document Management CRUD.
 
 **This document does not commit to that order — it's the observed pattern, not a decision made on the user's behalf.** Confirm before implementing.
 
 **Confirmed decisions from this checkpoint (do not re-litigate without a new reason):**
-- Combined existence+ownership query for single-resource lookups — the pattern for download/delete too.
-- Typed UUID path parameters — the pattern for any future `/{id}` route.
-- `document_service.py` remains the one service for all `Document` operations.
+- Missing-file case is `500`, not `404` — distinct from the ownership `404`.
+- `get_file_path()` returns a `Path`, doesn't read content — `FileResponse` streams.
+- No `response_model` on binary/file-serving routes.
+- `document_service` composing another `document_service` function (not just `storage_service`) is now an established, reusable pattern.
 
 ---
 
@@ -397,11 +406,12 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 
 - **Phase 1 (current, in progress):** Single-document upload + chat, deployed.
   - Auth ✅ done.
-  - Protected-route dependency (`get_current_user`) ✅ done, consumed by 3 routes.
+  - Protected-route dependency (`get_current_user`) ✅ done, consumed by 4 routes.
   - **Task 3B (Document Management backend, upload-only scope) ✅ done — all 4 checkpoints complete.**
   - **Document listing ✅ done** (Document Management CRUD, Checkpoint 1).
   - **Document detail ✅ done** (Document Management CRUD, Checkpoint 2).
-  - Document download/delete — not started, not scheduled.
+  - **Document download ✅ done** (Document Management CRUD, Checkpoint 3).
+  - Document delete — not started, not scheduled.
   - Document processing/chat (parsing, embeddings, RAG) — not started.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.
@@ -424,7 +434,7 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 
 1–15. Unchanged — see prior syncs (CI resolved, `.env.example` resolved, refresh-token gap, username-field gap, `python-multipart` resolved, JWT-in-localStorage, no rate limiting, embedding-dimension assumption, nothing deployed, no `User.documents` relationship, `max_upload_size_mb` resolved, `docs/API.md` gaps resolved, commit-status items resolved, CI-multipart-confirmation still pending).
 
-16. **Document download/delete remain entirely unimplemented and unscheduled** — **FURTHER PARTIALLY RESOLVED this checkpoint.** List and detail are now both implemented. Download and delete remain unscheduled — restated so this doesn't silently drop off the list.
+16. **Document delete remains entirely unimplemented and unscheduled** — **FURTHER PARTIALLY RESOLVED this checkpoint.** List, detail, and download are now all implemented. Delete remains unscheduled — restated so this doesn't silently drop off the list.
 
 ---
 
@@ -451,7 +461,7 @@ See Section 12.
 *(Unchanged from prior syncs — see Section 19 history. Restating the two most relevant to this checkpoint's process:)*
 
 - **Documentation is part of the milestone, not an afterthought.** Documentation synchronization is part of the same checkpoint as the code, always — this checkpoint again did implementation → tests → manual verification → documentation, all before stopping for review.
-- **Do not assume fields, routes, schemas, or service behavior exist — inspect the actual code first.** This checkpoint's explicit instruction reinforced this again: `Document.id`'s type and `DocumentResponse`'s shape were both confirmed by reading the actual files before writing any detail-endpoint code.
+- **Prefer extending existing services over creating parallel abstractions — and verify that instinct against the actual code before writing anything.** This checkpoint's explicit instruction to inspect `storage_service.py` "carefully" before deciding whether it needed extending was followed literally: the file was read in full first, confirmed to have no read-side operation, and exactly one function was added — not a rewrite, not a parallel `download_service.py`.
 
 ---
 
@@ -459,11 +469,13 @@ See Section 12.
 
 *(Unchanged sections — origin/philosophy, resume-evolution framing, verification discipline, rejected-ideas list — carry forward from the prior sync. Additions below.)*
 
-**This checkpoint reinforces the same "reuse, don't duplicate" pattern seen in the listing checkpoint** — every explicit reuse instruction (reuse `get_current_user`, reuse `DocumentResponse`, extend `document_service.py`) again turned out to be independently correct, not just compliant. Two checkpoints in a row following this exact shape (extend the existing service, reuse the existing schema, no new abstractions) is now a real pattern, not a coincidence — worth explicitly expecting for download and delete too, and worth being suspicious of any future instinct to introduce a new service/schema for a document sub-resource without a concrete reason.
+**This checkpoint is the first to touch `storage_service.py` since it was created in Task 3B Checkpoint 2** — three checkpoints (upload, list, detail) all worked without needing to. When a genuine new capability (reading a file back) finally required it, the change was exactly one function and one exception, added without touching `save_file`/`delete_file` at all. Worth treating as a positive signal about the original service boundary: it was cut in the right place, since extending it for a related-but-distinct capability didn't require any rework of what already existed.
 
-**A genuinely new security pattern was established this checkpoint, not just reused:** combining existence and ownership into a single query, rather than checking ownership as a second step after fetching. This is the first checkpoint where that distinction actually mattered (list didn't need it — filtering a collection by owner is different from looking up one specific row someone else might own) and it's now the documented, expected pattern for every future single-resource-by-ID endpoint in this project (download, delete, and anything later like chat-session-by-id).
+**Two services composing each other is now an established pattern, not a one-off.** `create_document` (Task 3B Checkpoint 3) calling `storage_service.save_file` was the first instance; `get_document_file_for_user` (this checkpoint) calling both `get_document_for_user` (same service) and `storage_service.get_file_path` (different service) is the second and third instances respectively. Future checkpoints (delete, in particular) should expect to follow the same shape: compose existing functions, don't duplicate their logic.
 
 **Rejected ideas worth remembering so they aren't re-proposed as if new** *(addition to the existing list):*
-- **"Fetch document by ID, then check `document.user_id == current_user.id` in application code"** — considered implicitly (it's the more obvious-looking first approach) and rejected in favor of a combined query, specifically because the task required it and because it's structurally safer: no intermediate state ever holds a document object that shouldn't be visible.
+- **A separate `download_service.py` or similar** — considered implicitly (given "download" sounds like it could be its own concern) and rejected; `document_service.py` remains the one service for all `Document`-related operations, per the pattern established since list/detail.
+- **Custom streaming/chunked-transfer code for large files** — not needed; Starlette's `FileResponse` already handles this (and range requests) natively. Building anything here would have been solving a problem the framework already solves.
+- **Folding the missing-file case into the same 404 as "not found/not yours"** — considered and rejected; conflating a server-side data-integrity problem with a normal ownership-boundary response would either leak information or mislabel the error. Kept as a distinct `500`.
 
-**A note on the human collaborator's working style, further confirmed:** the instructions for this checkpoint were the most explicit yet about a specific *security* requirement (indistinguishable 404s), not just a process requirement — worth noting that this project's collaborator pays close, specific attention to information-leakage patterns (see also: login's uniform error in Task 2.2, the timing-safe dummy-hash comparison in `auth_service`) and expects each new endpoint to proactively match that bar, not just pass functional tests.
+**A note on the human collaborator's working style, further confirmed:** the instruction to "inspect `storage_service.py` carefully" before deciding whether to extend it — rather than just being told to extend it — reflects a consistent pattern in this project: verification and inspection are expected to happen genuinely, not just be asserted as having happened. This checkpoint's report reflects that literally (the file was read, quoted, and reasoned about before any code was written), consistent with every prior checkpoint's discipline of manual, real-infrastructure verification over "should work" assumptions.

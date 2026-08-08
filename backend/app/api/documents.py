@@ -2,11 +2,11 @@
 Documents router.
 
 Task 3B Checkpoint 3 scope: upload. Document Management CRUD
-Checkpoint 1 scope: authenticated listing. Checkpoint 2 scope:
-authenticated detail. Download/delete are still later checkpoints
-(see PROJECT_CONTEXT.md Section 13). This is `get_current_user`'s
-consumer for all three routes — every route here requires a valid
-bearer token.
+Checkpoint 1: authenticated listing. Checkpoint 2: authenticated
+detail. Checkpoint 3 (this checkpoint): authenticated download.
+Delete is still a later checkpoint (see PROJECT_CONTEXT.md Section
+13). This is `get_current_user`'s consumer for all four routes —
+every route here requires a valid bearer token.
 
 Deliberately thin: routes validate their own path/query params
 (document_id's type, pagination bounds), enforce the size cap on
@@ -18,6 +18,7 @@ here — ownership filtering happens in the service, not the router.
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -108,3 +109,48 @@ async def get_document(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
         )
     return DocumentResponse.model_validate(document)
+
+
+@router.get("/{document_id}/file")
+async def download_document(
+    document_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """
+    Return the actual stored file for a document owned by the
+    authenticated user.
+
+    Same indistinguishable-404 behavior as the detail endpoint for
+    "doesn't exist" vs. "belongs to someone else" — both flow through
+    the same get_document_for_user() ownership check inside
+    document_service.get_document_file_for_user(). A document that
+    exists and is owned by the caller, but whose file is missing from
+    disk, is a different situation (a server-side data integrity
+    problem, not a client error) and gets a distinct 500 — without
+    ever revealing the filesystem path in the response.
+
+    No response_model here: the body is the file itself, not a JSON
+    DocumentResponse — the two are mutually exclusive for this route.
+    """
+    try:
+        result = await document_service.get_document_file_for_user(
+            db, document_id=document_id, user_id=current_user.id
+        )
+    except storage_service.StoredFileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="The stored file for this document could not be found.",
+        ) from exc
+
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
+    document, file_path = result
+    return FileResponse(
+        path=file_path,
+        media_type=document.content_type,
+        filename=document.original_filename,
+    )
