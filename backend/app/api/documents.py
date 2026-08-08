@@ -2,18 +2,21 @@
 Documents router.
 
 Task 3B Checkpoint 3 scope: upload. Document Management CRUD
-Checkpoint 1 scope: authenticated listing. Detail/download/delete are
-still later checkpoints (see PROJECT_CONTEXT.md Section 13). This is
-`get_current_user`'s consumer for both routes — every route here
-requires a valid bearer token.
+Checkpoint 1 scope: authenticated listing. Checkpoint 2 scope:
+authenticated detail. Download/delete are still later checkpoints
+(see PROJECT_CONTEXT.md Section 13). This is `get_current_user`'s
+consumer for all three routes — every route here requires a valid
+bearer token.
 
-Deliberately thin: routes validate their own query params (pagination
-bounds), enforce the size cap on upload (the one piece of validation
-that genuinely belongs at this layer — see Section 11 #24), and
-delegate everything else to document_service. No business logic and
-no direct DB query lives here — ownership filtering happens in the
-service, not the router.
+Deliberately thin: routes validate their own path/query params
+(document_id's type, pagination bounds), enforce the size cap on
+upload (the one piece of validation that genuinely belongs at this
+layer — see Section 11 #24), and delegate everything else to
+document_service. No business logic and no direct DB query lives
+here — ownership filtering happens in the service, not the router.
 """
+import uuid
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,3 +83,28 @@ async def list_documents(
         db, user_id=current_user.id, skip=skip, limit=limit
     )
     return [DocumentResponse.model_validate(document) for document in documents]
+
+
+@router.get("/{document_id}", response_model=DocumentResponse)
+async def get_document(
+    document_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DocumentResponse:
+    """
+    Return metadata for a single document owned by the authenticated
+    user.
+
+    A nonexistent document and another user's document return the
+    identical 404 — the service's combined WHERE clause (id AND
+    user_id) means there's no code path where this router ever learns
+    which case it was, so there's nothing to accidentally leak.
+    """
+    document = await document_service.get_document_for_user(
+        db, document_id=document_id, user_id=current_user.id
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+    return DocumentResponse.model_validate(document)

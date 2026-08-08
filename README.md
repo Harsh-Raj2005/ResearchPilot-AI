@@ -10,12 +10,14 @@ Built incrementally, one phase and one task at a time. See
 
 ## Current status
 
-**Phase 1: authenticated document upload and listing both work
-end-to-end.** `POST /api/v1/documents/upload` and `GET
-/api/v1/documents` (paginated, newest first, strictly scoped to the
-authenticated user) are both live. Document detail, download, and
-delete are not implemented yet. See `docs/PROJECT_CONTEXT.md` for
-full current state and `CHANGELOG.md` for the task-by-task history.
+**Phase 1: authenticated document upload, listing, and detail lookup
+all work end-to-end.** `POST /api/v1/documents/upload`, `GET
+/api/v1/documents` (paginated, own documents only), and `GET
+/api/v1/documents/{document_id}` (single-document metadata, 404 for
+anything not owned by the caller — indistinguishable from a
+nonexistent ID) are all live. Document download and delete are not
+implemented yet. See `docs/PROJECT_CONTEXT.md` for full current state
+and `CHANGELOG.md` for the task-by-task history.
 
 ## Stack
 

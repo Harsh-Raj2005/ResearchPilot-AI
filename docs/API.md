@@ -108,4 +108,24 @@ Returns `[]` (not an error) for a user with no documents. Results are always sco
 **Response `401`** — missing or invalid token
 **Response `422`** — `skip`/`limit` outside their allowed bounds
 
-_Detail, download, and delete endpoints are not implemented yet — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._
+### `GET /documents/{document_id}`
+Return metadata for a single document owned by the current user.
+
+**Path parameter:** `document_id` (UUID)
+
+**Response `200`**
+```json
+{
+  "id": "uuid",
+  "original_filename": "thesis.pdf",
+  "content_type": "application/pdf",
+  "file_size_bytes": 123456,
+  "created_at": "2026-01-01T00:00:00Z"
+}
+```
+
+**Response `401`** — missing or invalid token
+**Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Both cases return the identical response — the endpoint never reveals whether another user's document exists.
+**Response `422`** — `document_id` is not a valid UUID
+
+_Download and delete endpoints are not implemented yet — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._

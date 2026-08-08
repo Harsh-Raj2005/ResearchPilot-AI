@@ -7,11 +7,12 @@ Routers call this; it never touches HTTP directly (no HTTPException
 here — see app/api/documents.py for how storage_service's domain
 exceptions get translated to status codes).
 
-Two functions: create_document (Checkpoint 3) and
-list_documents_for_user (Document Management CRUD, Checkpoint 1 —
-listing). get/delete are still out of scope and will be added here
-when their own checkpoints arrive, following the same pattern as
-auth_service.py.
+Three functions: create_document (Task 3B Checkpoint 3),
+list_documents_for_user (Document Management CRUD Checkpoint 1 —
+listing), and get_document_for_user (Document Management CRUD
+Checkpoint 2 — detail). download/delete are still out of scope and
+will be added here when their own checkpoints arrive, following the
+same pattern as auth_service.py.
 """
 import uuid
 
@@ -82,3 +83,27 @@ async def list_documents_for_user(
         .limit(limit)
     )
     return list(result.scalars().all())
+
+
+async def get_document_for_user(
+    db: AsyncSession,
+    *,
+    document_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> Document | None:
+    """
+    Return a single document if it exists AND belongs to user_id,
+    otherwise None.
+
+    Both conditions are in the same WHERE clause — deliberately not
+    "fetch by id, then check ownership in Python" — so there is no
+    code path that ever loads another user's row into memory, and a
+    wrong-owner request is structurally indistinguishable (at the
+    query level, and therefore at the response level) from a
+    nonexistent id. The router turns None into a single, uniform 404
+    for both cases — never revealing which one occurred.
+    """
+    result = await db.execute(
+        select(Document).where(Document.id == document_id, Document.user_id == user_id)
+    )
+    return result.scalar_one_or_none()

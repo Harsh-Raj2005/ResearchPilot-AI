@@ -340,3 +340,42 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   live OpenAPI schema.
 - Detail, download, and delete endpoints remain unimplemented — this
   checkpoint is listing only, per its approved scope.
+
+### Document Management CRUD — Checkpoint 2: Document detail
+- Added `GET /api/v1/documents/{document_id}` — authenticated,
+  ownership-enforced single-document metadata lookup.
+- Extended `app/services/document_service.py` with
+  `get_document_for_user()` (third function, alongside
+  `create_document` and `list_documents_for_user` — same one-service-
+  per-resource pattern, not a parallel service).
+- **Ownership enforced via a single combined `WHERE id = :id AND
+  user_id = :user_id` clause**, not "fetch by id, then check
+  ownership in Python." This means there is no code path where the
+  service ever loads another user's row into memory, and — as a
+  structural consequence, not a separate check — a wrong-owner
+  request and a nonexistent-ID request are indistinguishable at the
+  query level. The router turns a `None` result into a single,
+  uniform `404 Document not found` for both cases.
+- No model or schema changes: `Document.id` (UUID, via `BaseModel`)
+  and `DocumentResponse` were both already exactly what the endpoint
+  needed.
+- Added 8 new tests to `tests/test_documents_api.py`: owner retrieves
+  their own document, unauthenticated request rejected, nonexistent
+  ID returns 404, cross-user request returns 404, wrong-owner and
+  nonexistent-ID responses are byte-identical (not just same status
+  code — same body), response doesn't leak `stored_filename`/
+  `storage_path`/`user_id`, malformed (non-UUID) ID rejected with
+  422, and an explicit regression check that upload and list both
+  still work after the new route was added. 70/70 backend tests
+  passing overall (62 pre-existing + 8 new), zero regressions.
+- Verified against a real running backend with two real users: real
+  upload, real retrieval of the owner's own document with correct
+  fields, real cross-user 404, real nonexistent-ID 404 with an
+  identical response body, real 401 with no token, confirmed via the
+  live OpenAPI schema that `/documents/upload`, `/documents`
+  (list), and `/documents/{document_id}` are all registered as
+  distinct routes with no path-matching conflicts (the static
+  `/upload` path is correctly not swallowed by the dynamic
+  `{document_id}` segment).
+- Download and delete endpoints remain unimplemented — this
+  checkpoint is detail-lookup only, per its approved scope.

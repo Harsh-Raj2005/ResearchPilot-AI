@@ -8,6 +8,7 @@ tmp_path per test, same pattern as test_storage_service.py, so
 nothing touches the real dev storage/uploads/ folder.
 """
 import asyncio
+import uuid
 from pathlib import Path
 
 import pytest
@@ -348,3 +349,108 @@ async def test_list_documents_default_pagination(client: AsyncClient):
     response = await client.get("/api/v1/documents", headers=headers)
     assert response.status_code == 200
     assert len(response.json()) == 1
+
+
+# --- GET /documents/{document_id} (Document Management CRUD, Checkpoint 2: detail) ---
+
+
+async def test_get_document_returns_own_document(client: AsyncClient):
+    headers = await _auth_headers(client, email="detailowner@example.com", username="detailowner")
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("thesis.pdf", b"thesis content", "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    response = await client.get(f"/api/v1/documents/{document_id}", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == document_id
+    assert body["original_filename"] == "thesis.pdf"
+    assert body["content_type"] == "application/pdf"
+    assert body["file_size_bytes"] == len(b"thesis content")
+    assert "created_at" in body
+
+
+async def test_get_document_requires_authentication(client: AsyncClient):
+    response = await client.get(f"/api/v1/documents/{uuid.uuid4()}")
+    assert response.status_code == 401
+
+
+async def test_get_document_nonexistent_returns_404(client: AsyncClient):
+    headers = await _auth_headers(client, email="detailmissing@example.com", username="detailmissing")
+    response = await client.get(f"/api/v1/documents/{uuid.uuid4()}", headers=headers)
+    assert response.status_code == 404
+
+
+async def test_get_document_cannot_retrieve_another_users_document(client: AsyncClient):
+    headers_a = await _auth_headers(client, email="detaila@example.com", username="detaila")
+    headers_b = await _auth_headers(client, email="detailb@example.com", username="detailb")
+
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("a_private.pdf", b"private", "application/pdf")},
+        headers=headers_a,
+    )
+    document_id = upload.json()["id"]
+
+    response = await client.get(f"/api/v1/documents/{document_id}", headers=headers_b)
+    assert response.status_code == 404
+
+
+async def test_get_document_wrong_owner_indistinguishable_from_nonexistent(client: AsyncClient):
+    headers_a = await _auth_headers(client, email="indista@example.com", username="indista")
+    headers_b = await _auth_headers(client, email="indistb@example.com", username="indistb")
+
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("owned.pdf", b"owned", "application/pdf")},
+        headers=headers_a,
+    )
+    owned_id = upload.json()["id"]
+
+    wrong_owner_response = await client.get(f"/api/v1/documents/{owned_id}", headers=headers_b)
+    nonexistent_response = await client.get(f"/api/v1/documents/{uuid.uuid4()}", headers=headers_b)
+
+    assert wrong_owner_response.status_code == nonexistent_response.status_code == 404
+    assert wrong_owner_response.json() == nonexistent_response.json()
+
+
+async def test_get_document_does_not_leak_internal_fields(client: AsyncClient):
+    headers = await _auth_headers(client, email="detailleak@example.com", username="detailleak")
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("paper.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    response = await client.get(f"/api/v1/documents/{document_id}", headers=headers)
+    body = response.json()
+    assert "stored_filename" not in body
+    assert "storage_path" not in body
+    assert "user_id" not in body
+
+
+async def test_get_document_invalid_id_format_rejected(client: AsyncClient):
+    headers = await _auth_headers(client, email="detailbadid@example.com", username="detailbadid")
+    response = await client.get("/api/v1/documents/not-a-uuid", headers=headers)
+    assert response.status_code == 422
+
+
+async def test_upload_and_list_still_work_after_detail_endpoint_added(client: AsyncClient):
+    """Regression check: adding GET /{document_id} must not change /upload or list behavior."""
+    headers = await _auth_headers(client, email="regression@example.com", username="regression")
+
+    upload_response = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("regress.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+    assert upload_response.status_code == 201
+
+    list_response = await client.get("/api/v1/documents", headers=headers)
+    assert list_response.status_code == 200
+    assert len(list_response.json()) == 1
