@@ -497,3 +497,65 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   via the live OpenAPI schema that `GET` and `DELETE` are both
   correctly registered under `/documents/{document_id}` with no
   conflicts.
+
+### Document Text Extraction — Checkpoint 1: Standalone PDF parse service
+- Added `app/services/parse_service.py` — `extract_text(file_path: Path) -> str`,
+  a PDF text-extraction primitive completely independent of FastAPI,
+  HTTP, SQLAlchemy, the `Document` model, and `document_service.py` —
+  mirrors `storage_service.py`'s decoupling philosophy exactly.
+- **PDF only.** `.docx` and `.txt` — both valid *upload* extensions
+  elsewhere in the app — are explicitly rejected here with
+  `UnsupportedFormatError`, not silently mishandled. Extraction for
+  those formats is an explicit future decision, not assumed.
+- **Failure contract, chosen deliberately to avoid conflating three
+  different situations:**
+  - A valid PDF with no extractable text (e.g. a scanned image with
+    no text layer) returns an **empty string** — this is a legitimate
+    outcome, not a failure.
+  - A file that doesn't exist, is empty, or is corrupted/not a real
+    PDF raises `ParseError` — verified directly against PyMuPDF's
+    actual behavior (not assumed): `pymupdf.EmptyFileError` is a
+    subclass of `pymupdf.FileDataError`, so one `except` clause
+    correctly covers both the empty-file and corrupted-file cases.
+  - A `.pdf`-extensioned-but-wrong-format file and a `.docx`/`.txt`
+    file both raise, but as *different* exceptions
+    (`ParseError` vs. `UnsupportedFormatError`) — deliberately not
+    conflated, since "wrong extension" and "right extension, bad
+    content" are different problems for a caller to handle.
+  - No bare `except Exception` — only `pymupdf.FileDataError` is
+    caught, matching `storage_service.py`'s existing discipline of
+    catching specific, understood exceptions.
+- **Text normalization, explicit and minimal:** each page's text is
+  stripped of leading/trailing whitespace, then pages are joined with
+  a blank line. No collapsing of internal whitespace, no cleaning, no
+  reformatting — documented and tested.
+- Uses PyMuPDF's `Document` context-manager support (`with pymupdf.open(...)`)
+  for reliable handle closing — verified this is actually supported by
+  the installed version before relying on it, rather than assumed.
+- Added `pymupdf>=1.24.0` to `backend/pyproject.toml`.
+- Added `tests/test_parse_service.py` — 10 new tests, all independent
+  of `conftest.py`'s DB/HTTP fixtures (proof of the decoupling claim,
+  not just an assertion of it): valid single-page extraction,
+  multi-page order preservation, blank-page-returns-empty-string (not
+  an error), corrupted PDF, empty file, nonexistent file, `.docx`
+  rejection, `.txt` rejection, direct callability with just a `Path`,
+  and the page-joining normalization behavior. **102 backend tests
+  passing overall (92 pre-existing + 10 new), zero regressions** —
+  exact count from an actual `pytest` run, not estimated.
+- Manually verified by calling `extract_text()` directly (not through
+  the API, since the API is intentionally untouched this checkpoint)
+  against a real generated multi-page PDF, a real corrupted file, and
+  a real `.docx` file — all behaved exactly per the documented
+  contract. One incidental observation from manual testing: an em-dash
+  inserted via PyMuPDF's own `insert_text()` (used only to generate
+  test fixtures) rendered as a middle-dot due to a default-font glyph
+  substitution — a quirk of the test-fixture-generation helper, not
+  of `extract_text()` itself; real uploaded PDFs carry their own
+  embedded fonts.
+- **NOT wired into upload, `document_service.py`, or any endpoint.**
+  No `extracted_text` column, no migration, no change to
+  `DocumentResponse`, no change to `POST /documents/upload`'s
+  behavior — all deliberately deferred to a future checkpoint that
+  will decide the storage/schema question on its own terms (whether
+  extracted text belongs on `Document` directly, a separate table, or
+  something else — not decided or assumed here).

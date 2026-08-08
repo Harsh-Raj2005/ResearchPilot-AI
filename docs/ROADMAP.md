@@ -28,4 +28,7 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Download — `GET /api/v1/documents/{document_id}/file`, same ownership isolation, streamed via FastAPI FileResponse
   - [x] Delete — `DELETE /api/v1/documents/{document_id}`, file deleted before DB row (see PROJECT_CONTEXT.md for ordering rationale)
 - [x] Document Management CRUD — **complete** (upload, list, detail, download, delete)
+- [ ] Document Text Extraction
+  - [x] Checkpoint 1 — Standalone PDF parse service (`app/services/parse_service.py`), not wired into upload
+  - [ ] Checkpoint 2 — Schema/storage design for extracted text (not yet decided)
 - [ ] Task 3C — Document management (frontend) — planned at a high level only

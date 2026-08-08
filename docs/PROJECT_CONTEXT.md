@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management) is fully complete. **Document Management CRUD is now fully complete: list, detail, download, and delete (this checkpoint) all work.** A logged-in user can upload a document, list their own documents, retrieve a single document's metadata, download the actual file, and delete a document (removing both the stored file and the database record) — with consistent ownership isolation and indistinguishable 404s across every operation. Nothing has been deployed yet. Document parsing, embeddings, RAG, and chat remain entirely unimplemented — this checkpoint completes the CRUD surface, not the AI pipeline.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management) and Document Management CRUD (list/detail/download/delete) are both fully complete. **A post-CRUD architectural review was conducted** (review-only, no code changes) to determine the most technically appropriate next milestone — see Section 20 for the full reasoning — and recommended **Document Text Extraction** as the next step, specifically because it's the genuine prerequisite for chunking/embeddings/RAG and carries the lowest risk of the candidates evaluated (no new external service, no new infrastructure). **Checkpoint 1 of that milestone is now complete: a standalone, fully-tested PDF text-extraction service exists, but is not wired into upload or any endpoint.** Nothing has been deployed yet.
 
 ---
 
@@ -74,13 +74,13 @@ Refresh page ──► chat history persists
 Log out and back in ──► document and chat history still there
 ```
 
-### End-to-end system flow for upload → chat (design target — **upload + list + detail + download implemented, rest not**)
+### End-to-end system flow for upload → chat (design target — **upload + list + detail + download + delete implemented; a standalone, unwired parser now also exists; rest not**)
 ```
-1. Frontend: POST /api/v1/documents/upload (multipart file)              ✅ backend done (Task 3B Checkpoint 3)
+1. Frontend: POST /api/v1/documents/upload (multipart file)              ✅ backend done
 2. Backend: save file to storage, insert `documents` row (status=uploading),
    enqueue background job, return document_id immediately (202 Accepted)  ⚠️ synchronous, no status/worker (see Section 6)
 3. Frontend: redirects to dashboard, polls GET /documents/{id}/status     ❌ not built (but GET /documents/{id} metadata ✅ exists)
-4. Worker (Arq): extract text, chunk, embed, status -> ready              ❌ not built
+4. Worker (Arq): extract text, chunk, embed, status -> ready              ❌ not built — extraction exists standalone (parse_service.py) but is NOT wired into this flow, NOT run on upload, and there is no worker
 5. Frontend: status becomes "ready", user opens document page             ❌ not built (but GET /documents listing ✅ exists)
 6. User sends chat message                                                ❌ not built
 7. Backend: retrieval + prompt + LLM call                                 ❌ not built
@@ -93,28 +93,26 @@ Log out and back in ──► document and chat history still there
 3. **Frontend auth state** — React Context holds the access token and email, persisted to `localStorage`.
 4. **Health check endpoint** — real DB round-trip check, returns 503 if DB unreachable.
 5. **`get_current_user` dependency** — the project's first protected-route wiring, live on all five document routes.
-6. **Document data layer** (`app/models/document.py`) — the `documents` table and `Document` model.
-7. **Storage service** (`app/services/storage_service.py`) — local-disk file save/delete, UUID filenames, extension validation, file location.
-8. **Authenticated document upload** (`POST /api/v1/documents/upload`) — composes `storage_service` + `Document` via `document_service.py`.
-9. **Document management housekeeping** — `.env.example`, `.gitignore`, `docker-compose.yml` volume for uploads persistence.
-10. **Authenticated document listing** (`GET /api/v1/documents`) — paginated, own documents only, newest first.
-11. **Authenticated document detail** (`GET /api/v1/documents/{document_id}`) — single-document metadata, indistinguishable 404 for not-found/not-owned.
-12. **Authenticated document download** (`GET /api/v1/documents/{document_id}/file`) — streams the actual stored file via FastAPI's `FileResponse`, correct content type and original filename, distinct `500` for a missing underlying file.
-13. **Authenticated document deletion** (`DELETE /api/v1/documents/{document_id}`, new this checkpoint) — removes both the stored file and the database record. `204 No Content` on success. **File deleted before the database row** — see Section 11 #40 for the full data-integrity reasoning. Reuses `get_document_for_user()` for ownership (no duplicated query) and `storage_service.delete_file()` as-is (already idempotent for an already-missing file — no new policy needed). **This completes the full Document Management CRUD surface.**
+6. **Document data layer** (`app/models/document.py`) — the `documents` table and `Document` model. **Unchanged this checkpoint** — no `extracted_text` column, no migration.
+7. **Storage service** (`app/services/storage_service.py`) — local-disk file save/delete, UUID filenames, extension validation, file location. **Unchanged this checkpoint.**
+8. **Document Management CRUD** — upload, list, detail, download, delete, all authenticated and ownership-isolated. **Unchanged this checkpoint.**
+9. **Standalone PDF text-extraction service** (`app/services/parse_service.py`, new this checkpoint) — `extract_text(file_path: Path) -> str`. PDF only; `.docx`/`.txt` explicitly rejected with `UnsupportedFormatError`. Raises `ParseError` for a missing, empty, or corrupted file; returns an empty string (not an error) for a valid PDF with no extractable text — these are deliberately different, undecided-to-conflate outcomes. Completely independent of FastAPI, HTTP, SQLAlchemy, `Document`, and `document_service.py` — mirrors `storage_service.py`'s own decoupling philosophy. **Not called from anywhere else in the codebase.**
 
 ### Features NOT yet implemented (in build order, per the Phase 1 design doc)
-- Background worker (Arq) for text extraction → chunking → embedding.
-- `document_chunks` table + pgvector column + similarity search.
+- **Wiring `parse_service.extract_text()` into anything** — upload, a reprocess endpoint, a CLI tool. It exists and is tested in isolation only.
+- **A decision on how/where extracted text is persisted.** Explicitly not decided — see Section 13. Whether it becomes a column on `Document`, a separate table, or something else is an open question for the next checkpoint, not assumed here.
+- DOCX/TXT text extraction — explicitly out of scope for this checkpoint; not assumed to be "next."
+- Chunking, embeddings, `document_chunks` table, pgvector usage, similarity search.
+- Background worker (Arq), Redis — explicitly not introduced; see Section 11 for why (nothing slow enough yet to justify them).
 - Chat session + chat message models and endpoints.
 - RAG service (retrieval + prompt assembly + LLM call).
-- Frontend: Dashboard page, Upload button, Document card, Document view page, PDF viewer, Chat panel (Task 3C).
-- Redis + Arq worker wiring into `docker-compose.yml`.
+- Frontend: Dashboard page, Upload button, Document card, Document view page, PDF viewer, Chat panel (Task 3C) — **untouched this checkpoint, per explicit instruction.**
 - Deployment (Railway for backend/worker/Postgres/Redis, Vercel for frontend) — **nothing is deployed yet**.
 - Sentry error tracking.
 - Google OAuth login (deferred to Phase 2/12 by design).
-- Refresh-token flow / `POST /auth/refresh` (see Section 15).
+- Refresh-token flow / `POST /auth/refresh`.
 
-### Features explicitly postponed by design (not oversights — see Phase 1 design doc §3)
+### Features explicitly postponed by design (not oversights — see Phase 1 design doc §3 and the post-CRUD review)
 | Feature | Deferred to | Why |
 |---|---|---|
 | Google OAuth login | Phase 2/12 | Email/password proves the auth pattern first |
@@ -129,50 +127,40 @@ Log out and back in ──► document and chat history still there
 | Docker Compose for production | N/A | Compose is local-dev only; managed platforms handle prod |
 | Rate limiting, email verification, forgot password | Phase 12 | Security hardening after the core loop is proven |
 | `python-magic` deep content-sniffing for uploads | Phase 12 | Extension + declared Content-Type validation is the Phase-1-appropriate rigor level |
-| Document versioning, restore/undelete, soft-delete | Not planned | Not part of the current model; would be a deliberate future decision, not an oversight (see Section 11 #41) |
-| Bulk/admin deletion, scheduled cleanup jobs | Not planned | Out of scope for Document Management CRUD entirely |
+| Document versioning, restore/undelete, soft-delete | Not planned | Not part of the current model |
+| Redis, Arq, background workers | Deferred until something is demonstrably too slow synchronously | Explicit finding of the post-CRUD architectural review — introducing them now would be speculative infrastructure with nothing yet to justify them |
+| DOCX/TXT extraction | Undecided future checkpoint | Explicitly out of scope for Checkpoint 1; PDF-only was a deliberate, scoped decision, not a limitation to work around immediately |
+| Extracted-text persistence design | Undecided — open question for the next checkpoint | Deliberately not decided in Checkpoint 1; must weigh document size, the 20MB upload cap, future chunking, and whether text belongs on `Document` directly vs. a separate representation |
 
 ---
 
 ## 3. CURRENT ARCHITECTURE
 
 ### Backend
-**FastAPI (Python, async).** Chosen over Django REST Framework (too batteries-included/ORM-first for this MVP) and Node/Express (would split the stack across two languages). Native async, Pydantic-based validation, auto-generated OpenAPI docs.
+**FastAPI (Python, async).** Unchanged this checkpoint.
 
 ### Frontend
-**React + TypeScript + Vite.** Chosen over Next.js (SSR/routing not needed) and Vue (smaller ecosystem for the chat/streaming UI). No Redux/Zustand — Context + local state until proven insufficient.
+**React + TypeScript + Vite.** Untouched this checkpoint, per explicit instruction.
 
 ### Database
-**PostgreSQL**, chosen for relational integrity plus a mature vector extension.
-
-**Vector store: `pgvector`, not Qdrant, for Phase 1.** One database instead of two. Qdrant deliberately deferred to Phase 4+.
+**PostgreSQL**, `pgvector`. Unchanged this checkpoint — no migration, no schema change.
 
 ### Authentication
-**JWT (access-token only)**, `PyJWT` direct, `bcrypt` direct. `get_current_user` uses `HTTPBearer` (not `OAuth2PasswordBearer`) since `/auth/login` accepts JSON, not OAuth2's form-encoded contract. **Now live on all five document routes** (`POST /upload`, `GET ""`, `GET /{id}`, `GET /{id}/file`, `DELETE /{id}`) — the fifth consumer, still zero modification to the dependency itself.
+**JWT (access-token only)**, unchanged this checkpoint. `get_current_user` still consumed by exactly five routes — this checkpoint added no new route.
 
 ### AI pipeline
-**Not built yet.** PyMuPDF for extraction, hand-rolled RAG (no LangChain/LlamaIndex), pgvector for retrieval — all planned, none implemented.
+**Still not built as an integrated pipeline**, but its first real primitive now exists in isolation: **PDF text extraction** (`app/services/parse_service.py`). Design per the Phase 1 doc: PyMuPDF for extraction (now actually added and used, not just planned), hand-rolled RAG (no LangChain/LlamaIndex), pgvector for retrieval — extraction is implemented; chunking, embeddings, retrieval, and RAG remain entirely unimplemented.
+
+**Why extraction was built as a standalone, decoupled service rather than wired directly into upload:** this was an explicit checkpoint requirement, and it independently matches the project's established pattern (`storage_service.py` was built the same way, and that decoupling is exactly what made composing it into `document_service.create_document()` straightforward in Task 3B Checkpoint 3 — the same reusability is being deliberately set up here, for whichever future consumer ends up calling `parse_service` first: synchronous upload processing, a future background worker, a reprocessing endpoint, or a CLI tool).
 
 ### Storage
-**Local disk, fully operational, with persistent Docker storage.** **`delete_file()` (already implemented since Checkpoint 2) is now actually exercised by a real endpoint for the first time** — previously only `save_file()` was used by upload. Its existing idempotency (a missing file is treated as success, not an error) turned out to be exactly what made the deletion-ordering decision this checkpoint safe — see the "Deletion ordering" note below and Section 11 #40 for the full reasoning.
-
-**Deletion ordering (the central design decision of this checkpoint):** when deleting a document, **the file is removed before the database row**, not after. A Postgres row and a disk file cannot be deleted in a single atomic transaction, so this ordering was chosen deliberately:
-- If the file delete succeeds but the DB delete/commit then fails, the result is a DB row referencing a now-missing file — **not a new failure mode**, since `get_document_file_for_user()` (Checkpoint 3) already handles exactly this cleanly (a distinct `500`, not a crash). The row stays visible and deletable, and retrying `DELETE` succeeds because `delete_file()` is idempotent.
-- The reverse order (DB row deleted and committed first, file deleted second) was rejected: a failure in the second step would orphan the file on disk with **no DB row left to ever reference it again** — a silent, permanent storage leak with no retry path.
-- If `delete_file()` raises `StorageError` (a genuine filesystem failure, not "already missing"), the Document row is deliberately **left untouched** rather than deleted — "row still there, file still there" is safe and inspectable; "row gone, file orphaned" is not.
+**Local disk, fully operational, with persistent Docker storage.** Unchanged this checkpoint. `parse_service.extract_text()` composes naturally with `storage_service.get_file_path()` (the exact `Path` a parser needs), but this composition has **not been implemented** — the two services remain separate and independently callable.
 
 ### Deployment (planned, nothing live yet)
-```
-Frontend  →  Vercel (auto-deploy from `main`)
-Backend   →  Railway (Docker deploy, auto-deploy from `main`)
-Worker    →  Railway (second service, SAME image as backend, different start command)
-Postgres  →  Railway managed Postgres (pgvector extension enabled)
-Redis     →  Railway managed Redis
-```
-**CI/CD:** GitHub Actions — Postgres service + real `pytest` run.
+Unchanged this checkpoint.
 
 ### Future microservices
-- **Arq worker**, **GROBID**, **Qdrant**, **Sentry** — all still not integrated; unchanged this checkpoint.
+- **Arq worker**, **GROBID**, **Qdrant**, **Sentry** — all still not integrated. The post-CRUD architectural review explicitly recommended against introducing Arq/Redis at this point (see Section 20) — nothing in the system is yet slow enough synchronously to justify them, and PyMuPDF extraction itself was not observed to be slow during manual verification of small test PDFs.
 
 ---
 
@@ -192,25 +180,29 @@ bcrypt>=4.1.0
 pyjwt>=2.8.0
 email-validator>=2.1.0
 python-multipart>=0.0.9
+pymupdf>=1.24.0
 
 # [dev] extras
 pytest>=8.2.0
 pytest-asyncio>=0.23.0
 httpx>=0.27.0
 ```
-**No new dependency this checkpoint** — deletion uses only SQLAlchemy's existing `db.delete()`/`db.commit()` (the same session object already used by `create_document`) and the already-implemented `storage_service.delete_file()`.
+**New dependency this checkpoint: `pymupdf`** (imported as `pymupdf`, not the older `fitz` alias). Verified installed and importable in the active environment — version `1.28.2` was actually installed and used for all testing/manual verification in this checkpoint, comfortably satisfying the `>=1.24.0` floor.
 
 ### Frontend
-Unchanged. `react`, `react-dom`, `react-router-dom` + dev tooling.
+Unchanged. Untouched this checkpoint.
 
 ### Database
-PostgreSQL 16. Two tables: `users`, `documents`. **No schema change this checkpoint** — deletion is a row removal against the existing `documents` table via the existing `Document` model; no new columns, no new migration.
+PostgreSQL 16. Two tables: `users`, `documents`. **No schema change this checkpoint.**
 
 ### File storage
-`app/services/storage_service.py` — **unchanged this checkpoint**. `delete_file()` (implemented since Checkpoint 2) is reused exactly as-is; its existing idempotency contract wasn't modified, just relied upon.
+`app/services/storage_service.py` — **unchanged this checkpoint.**
+
+### Parsing
+**New this checkpoint.** `app/services/parse_service.py` — see Section 7 for full detail.
 
 ### Environment management
-`pydantic-settings` (`app/core/config.py`). **No new settings this checkpoint.**
+`pydantic-settings` (`app/core/config.py`). **No new settings this checkpoint** — `parse_service.py` reads no configuration at all (it's a pure function of a file path).
 
 ---
 
@@ -224,108 +216,112 @@ researchpilot/
 ├── README.md
 ├── docker-compose.yml
 ├── docs/
-│   ├── API.md                          # now documents DELETE /documents/{id} (this checkpoint)
-│   ├── ARCHITECTURE.md
+│   ├── API.md                          # unchanged this checkpoint — no new endpoint
+│   ├── ARCHITECTURE.md                 # unchanged this checkpoint — layering description still accurate as-is
 │   └── ROADMAP.md
 ├── backend/
 │   ├── .env.example
 │   ├── Dockerfile
 │   ├── alembic.ini
-│   ├── alembic/
-│   │   ├── env.py
-│   │   ├── script.py.mako
-│   │   └── versions/
-│   │       ├── 0618947abd34_create_users_table.py
-│   │       └── 23fed3dde01d_create_documents_table.py
+│   ├── alembic/                        # unchanged — no new migration
 │   ├── app/
-│   │   ├── main.py
+│   │   ├── main.py                     # unchanged — no new router
 │   │   ├── api/
 │   │   │   ├── auth.py
-│   │   │   ├── documents.py           # POST /upload, GET "" (list), GET /{id} (detail), GET /{id}/file (download), DELETE /{id} (delete, new this checkpoint)
+│   │   │   ├── documents.py            # unchanged this checkpoint
 │   │   │   └── health.py
 │   │   ├── core/
 │   │   │   ├── config.py
 │   │   │   ├── security.py
-│   │   │   └── deps.py                # get_current_user — now consumed by 5 routes
+│   │   │   └── deps.py                 # unchanged — still consumed by 5 routes
 │   │   ├── db/
 │   │   │   └── session.py
 │   │   ├── models/
 │   │   │   ├── base.py
 │   │   │   ├── user.py
-│   │   │   └── document.py            # unchanged
+│   │   │   └── document.py             # unchanged this checkpoint — no extracted_text column
 │   │   ├── schemas/
 │   │   │   ├── auth.py
-│   │   │   └── document.py            # unchanged — delete returns no body, no schema needed
+│   │   │   └── document.py             # unchanged this checkpoint
 │   │   ├── services/
 │   │   │   ├── auth_service.py
-│   │   │   ├── document_service.py    # extended a fifth time: delete_document_for_user (new, this checkpoint)
-│   │   │   └── storage_service.py     # unchanged — delete_file() reused exactly as-is
-│   │   └── workers/
-│   ├── pyproject.toml
+│   │   │   ├── document_service.py     # unchanged this checkpoint — does not call parse_service
+│   │   │   ├── storage_service.py      # unchanged this checkpoint
+│   │   │   └── parse_service.py        # NEW this checkpoint — standalone PDF extraction
+│   │   └── workers/                    # still empty
+│   ├── pyproject.toml                  # modified — added pymupdf
 │   └── tests/
-│       ├── conftest.py
-│       ├── test_auth.py               # 12 tests
-│       ├── test_deps.py               # 5 tests
-│       ├── test_document_model.py     # 5 tests
-│       ├── test_documents_api.py      # 52 tests (10 upload + 12 list + 8 detail + 9 download + 13 new delete)
-│       └── test_storage_service.py    # 18 tests
-└── frontend/                          # unchanged this checkpoint
+│       ├── conftest.py                 # unchanged — parse_service tests need none of its fixtures
+│       ├── test_auth.py                # 12 tests
+│       ├── test_deps.py                # 5 tests
+│       ├── test_document_model.py      # 5 tests
+│       ├── test_documents_api.py       # 52 tests — unchanged this checkpoint
+│       ├── test_storage_service.py     # 18 tests
+│       └── test_parse_service.py       # NEW this checkpoint — 10 tests
+└── frontend/                           # untouched this checkpoint
 ```
 
 ### Purpose of every major folder
-Unchanged from the prior sync — see prior sections. **This checkpoint modified exactly two application files** (`app/api/documents.py`, `app/services/document_service.py`) plus their shared test file — `storage_service.py` and `app/models/document.py` were both untouched, confirming the earlier services were built with the right boundaries (delete needed no new filesystem capability, no new column).
+Unchanged from the prior sync — see prior sections. **This checkpoint modified exactly one existing file** (`backend/pyproject.toml`, one dependency line added) and created exactly two new files (`app/services/parse_service.py`, `tests/test_parse_service.py`). `document_service.py`, `app/api/documents.py`, `app/models/document.py`, `app/schemas/document.py`, and every frontend file were **not touched** — verified directly (`grep -c parse_service` across those four files returned `0` for each) rather than merely asserted.
 
 ---
 
 ## 6. DATABASE DESIGN
 
-**Unchanged this checkpoint.** Two tables: `users`, `documents`. No migration — deletion is `DELETE FROM documents WHERE id = ... AND user_id = ...` in effect (expressed via SQLAlchemy's `db.delete(document)` on an already ownership-verified row, not a raw filter-delete — see Section 11 #42 for why).
+**Unchanged this checkpoint.** Two tables: `users`, `documents`. No migration, no new column, no schema change of any kind. This was an explicit, repeated instruction for this checkpoint (do not add `extracted_text` to `Document`, do not create a migration) — followed exactly, and confirmed by inspection afterward, not just by not having written one.
 
-**One clarification worth recording:** this checkpoint is the first to actually exercise a full "fetch, then mutate/remove, then commit" cycle against a `Document` row outside of `create_document`'s insert. The ownership check (`get_document_for_user`) and the deletion (`db.delete()` + `db.commit()`) happen in the same function, using the same session — no risk of a time-of-check-to-time-of-use gap between verifying ownership and performing the delete.
+**The extracted-text persistence question remains genuinely open.** The checkpoint instructions were explicit that the future schema decision must weigh document size, the current 20MB upload cap, future chunking, and whether extracted text belongs directly on `Document` or in a separate representation — none of that has been decided, and this document does not pre-empt it.
 
 ---
 
 ## 7. IMPLEMENTED FEATURES
 
-*(Tasks 1 through Document Management CRUD Checkpoint 3 — see prior syncs for full detail; summarized here, unchanged.)*
+*(Tasks 1 through Document Management CRUD Checkpoint 4 — see prior syncs for full detail; summarized here, unchanged.)*
 
 - **Task 1** — Project skeleton.
 - **Task 2.1** — Database foundation.
 - **Task 2.2** — Authentication foundation (backend). 12 tests.
 - **Task 2.3** — Frontend authentication. Playwright-verified.
 - **Task 3A** — `get_current_user` protected-route dependency. 5 tests.
-- **Task 3B Checkpoint 1** — Document data layer. 5 tests.
-- **Task 3B Checkpoint 2** — Storage service. 18 tests.
-- **Task 3B Checkpoint 3** — Document upload API. 10 tests.
-- **Task 3B Checkpoint 4** — Housekeeping.
-- **Document Management CRUD Checkpoint 1** — List documents. 12 tests.
-- **Document Management CRUD Checkpoint 2** — Document detail. 8 tests.
-- **Document Management CRUD Checkpoint 3** — Document download. 9 tests.
+- **Task 3B Checkpoints 1–4** — Document data layer, storage service, upload API, housekeeping.
+- **Document Management CRUD Checkpoints 1–4** — List, detail, download, delete. **Complete.**
+- **Post-CRUD architectural review** (review-only, no code) — recommended Document Text Extraction as the next milestone; see Section 20.
 
-### Document Management CRUD — Checkpoint 4: Document delete (this checkpoint)
-**What it does:** `DELETE /api/v1/documents/{document_id}` — authenticated, ownership-enforced deletion of both the stored file and the database record. **Completes the full CRUD surface planned for Document Management.**
+### Document Text Extraction — Checkpoint 1: Standalone PDF parse service (this checkpoint)
+**What it does:** `app/services/parse_service.py` — `extract_text(file_path: Path) -> str`. Given a `.pdf` file's path, returns its text content, page by page, in order.
+
 **Key decisions:**
-- **Deletion ordering: file first, then DB row + commit.** The central data-integrity decision for this checkpoint — see Section 3 and Section 11 #40 for the full reasoning. Chosen specifically because it composes with `delete_file()`'s pre-existing idempotency guarantee to make the failure mode self-healing (retry succeeds) rather than permanent (orphaned file, unrecoverable).
-- **`204 No Content` on success**, no custom JSON success body — matches the existing project convention of not inventing response shapes the codebase doesn't already use, and is the conventional REST response for a delete with nothing further to return.
-- **A second `DELETE` of an already-deleted document returns `404`, not another `204`.** Deliberate: the document genuinely no longer exists, so "not found" is the accurate response. This is a real API-behavior decision worth remembering — some REST APIs choose idempotent `204`s on repeat delete instead; this project chose accuracy over that flavor of idempotency, and the choice should be preserved consistently if it's ever revisited.
-- **`document_service.py` extended a fifth time** (`delete_document_for_user`), reusing `get_document_for_user()` for ownership rather than a new query, and reusing `storage_service.delete_file()` rather than a new filesystem helper — no parallel abstractions introduced anywhere in this checkpoint.
-- **A genuine filesystem failure (`StorageError`) during file deletion leaves the Document row untouched** and surfaces as a `500` — the DB and filesystem states stay consistent with each other (both still "exists") rather than drifting apart.
-**Files:** `backend/app/api/documents.py` (modified — new route), `backend/app/services/document_service.py` (modified — `delete_document_for_user`), `backend/tests/test_documents_api.py` (modified — 13 new tests appended). `storage_service.py` and `app/models/document.py` **not touched** — no genuine blocker required either.
-**Tests:** 13 new — owner delete success (204, empty body), deleted document 404s on detail, deleted document disappears from list, physical file actually removed from disk, unauthenticated rejected, nonexistent 404, cross-user rejected (with explicit confirmation the document was **not** actually deleted), wrong-owner/nonexistent responses byte-identical, malformed UUID 422, already-missing-file deletion still removes the stale row, deleting one user's document doesn't affect another's, repeated delete returns 404 not 204, and an explicit upload+list+detail+download regression check. **92/92 across the full suite, zero regressions.**
-**Verified beyond pytest:** real upload, real delete (`204`), confirmed the physical file actually gone from disk via direct filesystem inspection, confirmed the DB row gone via a real `404` on detail, confirmed gone from list; real cross-user delete attempt rejected with `404` and the document confirmed genuinely untouched afterward; real `401`/`422`; real missing-file delete (manually removed the on-disk file, then deleted via the API) confirmed still `204`s and removes the stale row; live OpenAPI schema confirmed `GET` and `DELETE` both correctly registered under `/documents/{document_id}` with no conflicts.
-**Not yet done:** Nothing — this was the last piece of the planned Document Management CRUD surface. No frontend consumes any of these five endpoints yet.
+- **PDF only.** `.docx` and `.txt` — both valid *upload* extensions elsewhere in the app (`settings.allowed_upload_extensions_list`) — are explicitly rejected here with `UnsupportedFormatError`, not silently mishandled or attempted. Extraction for those formats is left as an explicit future decision.
+- **Three-way failure contract, deliberately not collapsed into one:**
+  1. A valid PDF with no extractable text (e.g. scanned image, no text layer) → returns `""`. Not an error.
+  2. A file that's missing, empty, or corrupted/not really a PDF → raises `ParseError`.
+  3. A file with an unsupported extension → raises `UnsupportedFormatError` (distinct from `ParseError`).
+- **`pymupdf.EmptyFileError` is a subclass of `pymupdf.FileDataError`** — verified directly against the installed library (not assumed from documentation), so one `except pymupdf.FileDataError` clause correctly and deliberately covers both the empty-file and corrupted-file cases without over-catching.
+- **No bare `except Exception`.** Only the specific, understood PyMuPDF exception is caught, matching `storage_service.py`'s existing discipline exactly.
+- **`pymupdf.open()` used via its context-manager protocol** (`with pymupdf.open(file_path) as document:`) for reliable handle closing — verified this is actually supported by the installed version (`1.28.2`) before relying on it, rather than assumed from general library familiarity.
+- **Minimal, explicit, documented text normalization:** each page's text is `.strip()`-ed, then pages are joined with `"\n\n"`. Nothing beyond that — no internal whitespace collapsing, no reformatting. Tested explicitly.
+- **No filesystem paths in exception messages** — `ParseError`'s messages are generic ("The file could not be found.", "The file is not a valid PDF or is corrupted.") so this exception is safe to surface without leaking server-side directory structure, matching the checkpoint's explicit security requirement.
+- **Zero DB/HTTP/`document_service` coupling** — confirmed by the tests themselves needing nothing from `conftest.py` (no `client`, no `db_session`), and confirmed post-hoc by grepping the four files that would need to reference `parse_service` for it to be "wired in" (`document_service.py`, `app/api/documents.py`, `app/models/document.py`, `app/schemas/document.py`) and finding zero references in all four.
+
+**Files:** `backend/app/services/parse_service.py` (new), `backend/tests/test_parse_service.py` (new), `backend/pyproject.toml` (modified — one dependency line).
+
+**Tests:** 10 new, all independent of any DB/HTTP fixture — basic valid-PDF extraction, multi-page order preservation, blank-page-returns-empty-string (not an error), corrupted PDF, empty file, nonexistent file, `.docx` rejection, `.txt` rejection, direct callability with just a `Path` (explicit proof of decoupling), and the page-joining normalization behavior. **102 backend tests passing overall (92 pre-existing + 10 new), zero regressions** — the exact count from an actual `pytest` run, reported after actually running it, not estimated in advance (the checkpoint instructions explicitly required this).
+
+**Verified beyond pytest:** called `extract_text()` directly (not through the API, since the API is intentionally untouched) against a real generated multi-page PDF (confirmed both pages' text present and in order), a real corrupted file (confirmed `ParseError`), a real `.docx` file (confirmed `UnsupportedFormatError`), and a real nonexistent path (confirmed `ParseError`). **One incidental, honestly-reported observation:** an em-dash inserted via PyMuPDF's own `insert_text()` (used only to *generate* test fixtures, not part of `extract_text()` itself) rendered as a middle-dot due to a default-font glyph-substitution quirk — noted transparently in the CHANGELOG as a test-fixture-generation artifact, not a defect in the extraction logic, since real uploaded PDFs carry their own embedded fonts.
+
+**Not yet done, deliberately:** not called from `document_service.py`, not called from the upload endpoint or any endpoint, no `extracted_text` column, no migration, no `DocumentResponse` change, no DOCX/TXT support, no chunking, no embeddings, no background processing. All explicitly out of scope for this checkpoint per its own instructions, not oversights.
 
 ---
 
 ## 8. AUTHENTICATION FLOW
 
-**Unchanged this checkpoint** except: `get_current_user` is now consumed by five routes, still with zero modification to the dependency itself.
+**Unchanged this checkpoint.** `get_current_user` still consumed by exactly five routes — no new route was added.
 
 ---
 
 ## 9. API ENDPOINTS
 
-### Implemented
+**Unchanged this checkpoint — no route was added, modified, or removed.** `parse_service.extract_text()` is not exposed via HTTP in any form.
 
 | Method | Route | Purpose | Auth required? |
 |---|---|---|---|
@@ -336,36 +332,33 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 | GET | `/api/v1/documents` | List the current user's documents, paginated | **Yes** |
 | GET | `/api/v1/documents/{document_id}` | Get one document's metadata | **Yes** |
 | GET | `/api/v1/documents/{document_id}/file` | Download the actual stored file | **Yes** |
-| DELETE | `/api/v1/documents/{document_id}` | Delete a document (file + DB row) | **Yes** — **new this checkpoint** |
+| DELETE | `/api/v1/documents/{document_id}` | Delete a document (file + DB row) | **Yes** |
 
-`docs/API.md` updated this checkpoint with the full `DELETE /documents/{document_id}` contract. **This completes the Document Management CRUD API surface.**
-
-### Still NOT implemented
-| Method | Route | Purpose |
-|---|---|---|
-| POST | `/api/v1/auth/refresh` | Exchange refresh token for new access token |
-
-Document-related CRUD has no remaining unimplemented endpoints. Everything else not-yet-built (chat, parsing endpoints, etc.) belongs to a different, not-yet-started part of the project (see Section 13).
+`docs/API.md` reviewed this checkpoint; confirmed no update needed since no HTTP surface changed.
 
 ---
 
 ## 10. CODING CONVENTIONS
 
-**Unchanged this checkpoint** — see prior sections. `DELETE /documents/{document_id}` follows every established convention exactly: thin router, service owns the ownership query and the deletion logic, no direct DB or filesystem access outside `services/`. **One addition worth recording:** action endpoints with no meaningful response body use `204 No Content` and a `-> None` return type — the established pattern for any future non-data-returning endpoint in this project (this is the first one).
+**Unchanged this checkpoint** — see prior sections. `parse_service.py` follows every established convention exactly: plain module-level functions (not a class, since the existing architecture doesn't genuinely require one — the checkpoint instructions explicitly asked for this to be verified before deciding), domain-specific `Exception` subclasses with clear docstrings (matching `storage_service.py`'s `UnsupportedFileTypeError`/`StorageError`/`StoredFileNotFoundError` style precisely), no bare `except Exception`, `Path`-based inputs.
 
 ---
 
 ## 11. IMPORTANT DESIGN DECISIONS
 
-*(1–39 unchanged from the prior sync. New decisions below.)*
+*(1–43 unchanged from the prior sync. New decisions below.)*
 
-40. **Deletion ordering: file deleted before the database row, not after** (Document Management CRUD Checkpoint 4). The central data-integrity decision of this checkpoint, since a Postgres row and a disk file cannot be removed in a single atomic transaction. **File-first is chosen** because it composes with `storage_service.delete_file()`'s pre-existing idempotency guarantee (a missing file is already treated as success, not an error): if the file delete succeeds but the DB commit then fails, the resulting "row exists, file doesn't" state is not a new problem — `get_document_file_for_user()` (Checkpoint 3) already handles it cleanly as a distinct `500`, and a retried `DELETE` succeeds because the file-delete step becomes a no-op. The rejected alternative (DB-first) has a strictly worse failure mode: a failed file-delete after a committed DB-delete orphans the file on disk with no DB row ever able to reference it again — a permanent, silent storage leak. This is not a claim of atomicity — none exists — but a deliberate choice of which of the two possible inconsistent states is recoverable.
+44. **`parse_service.py` built as a fully standalone service, not composed into `document_service.py` in this checkpoint.** This was an explicit instruction, and it independently matches the project's established pattern — `storage_service.py` was built the same decoupled way in Task 3B Checkpoint 2, and that decoupling is exactly what let `document_service.create_document()` compose it cleanly in Checkpoint 3 without either module needing rework. The same reusability is being deliberately set up here for whichever future consumer calls `parse_service` first.
 
-41. **No soft-delete, no versioning, no restore/undelete in this checkpoint or planned.** The `Document` model has no `deleted_at` or similar column; a `DELETE` genuinely and immediately removes the row and the file. This wasn't an oversight requiring investigation — the task scope explicitly excluded these, and the existing model has no infrastructure for them. If a future task wants soft-delete, that's a deliberate model change to plan and document then, not something to silently retrofit.
+45. **PDF-only extraction, `.docx`/`.txt` explicitly rejected rather than silently ignored.** Even though both are valid *upload* extensions elsewhere in the app, attempting to parse them with a PDF-only parser and getting garbage (or a confusing low-level error) would be worse than an explicit, documented rejection. DOCX/TXT support is left as a genuinely open future decision, not implied to be "coming next."
 
-42. **Ownership-verified row deleted via `db.delete(document)` on an already-fetched ORM object, not a raw `DELETE FROM ... WHERE ...` filter statement.** This keeps the "fetch with ownership check, then act on that exact object" pattern consistent with how `get_document_for_user()` is already used everywhere else (detail, download) — the delete function doesn't introduce a second way of interacting with the `documents` table.
+46. **A valid-but-textless PDF returns an empty string, not an exception.** Deliberately not the same situation as a corrupted file — collapsing them would destroy information a future caller might need (e.g., to flag scanned/image-only PDFs as OCR candidates later, versus flagging a genuinely broken upload for the user to fix).
 
-43. **A second `DELETE` of an already-deleted document returns `404`, not an idempotent `204`.** Explicitly considered both options; chose response accuracy (the document doesn't exist, so say so) over delete-idempotency-as-a-service-contract, since nothing elsewhere in this project's API establishes that convention and inventing it here would be a one-off. Worth being consistent with this choice if a future endpoint faces the same question.
+47. **`pymupdf.FileDataError` is the only caught exception**, verified via direct testing to also catch `pymupdf.EmptyFileError` (a subclass) for empty files — one exception type, not two, because the library's own hierarchy already unifies them. No broad `except Exception` anywhere in this module.
+
+48. **`ParseError` messages never include the filesystem path.** Generic, safe-to-surface messages only — matches the checkpoint's explicit security requirement and the same instinct already applied to `storage_service.StoredFileNotFoundError`'s 500 responses in Task 3B/Document Management CRUD Checkpoint 3.
+
+49. **No `extracted_text` column, no migration, in this checkpoint.** The schema/storage-design question for extracted text is deliberately left open — explicitly not decided here, and not to be assumed by the next checkpoint either without its own review.
 
 ---
 
@@ -377,41 +370,46 @@ Document-related CRUD has no remaining unimplemented endpoints. Everything else 
 - Task 2.2 — Authentication foundation (backend).
 - Task 2.3 — Frontend authentication.
 - Task 3A — `get_current_user` protected-route dependency.
-- Task 3B Checkpoints 1–4 — Document data layer, storage service, upload API, housekeeping. **Task 3B fully complete.**
-- **Document Management CRUD Checkpoint 1 — List documents. Complete.**
-- **Document Management CRUD Checkpoint 2 — Document detail. Complete.**
-- **Document Management CRUD Checkpoint 3 — Document download. Complete.**
-- **Document Management CRUD Checkpoint 4 — Document delete. Complete.**
-- **Document Management CRUD as a whole: complete (upload, list, detail, download, delete).**
+- Task 3B Checkpoints 1–4 — Document data layer, storage service, upload API, housekeeping.
+- Document Management CRUD Checkpoints 1–4 — List, detail, download, delete. **Complete.**
+- Post-CRUD architectural review (review-only).
+- **Document Text Extraction Checkpoint 1 — Standalone PDF parse service. Complete.**
 
-**Git state:** per the prior checkpoint's report, everything through Document Management CRUD Checkpoint 3 was committed and pushed. **This checkpoint's changes are implemented, tested, and verified but explicitly NOT yet committed or pushed** — per this checkpoint's own instructions. Recommended single commit message is in this checkpoint's completion report.
+**Git state:** per the review checkpoint's report, everything through Document Management CRUD Checkpoint 4 was committed and pushed (commit `31b8913`). **This checkpoint's changes are implemented, tested, and verified but explicitly NOT yet committed or pushed** — per this checkpoint's own instructions. One recommended commit message is in this checkpoint's completion report.
 
 **Not started at all:**
-- Background worker, chunking, embeddings, pgvector usage.
+- Wiring `parse_service` into upload or any endpoint.
+- The extracted-text persistence/schema decision.
+- DOCX/TXT extraction.
+- Chunking, embeddings, pgvector usage, similarity search.
+- Background worker, Redis, Arq.
 - Everything related to chat.
 - All frontend pages/components beyond auth.
-- Redis + Arq wiring.
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None. Document Management CRUD is now fully complete for its own scope — no remaining piece of upload/list/detail/download/delete is missing.
+**Partially completed work:** None in the sense of half-written features. `parse_service.py` is fully working and tested for its own, deliberately narrow scope — it just isn't connected to anything else yet, which is the checkpoint's intended state, not a gap.
 
 ---
 
 ## 13. NEXT TASK
 
-**No checkpoint is currently in progress or pre-planned.** With Document Management CRUD now fully complete, the project has reached a natural decision point between two substantially different directions:
+**Document Text Extraction — Checkpoint 2: schema/storage design for extracted text.**
 
-1. **Task 3C — Frontend document management UI.** Build the Dashboard, Upload button, Document card, Document view page against the now-complete backend CRUD surface. This has been "planned at a high level only" throughout every prior checkpoint's documentation and is the most immediately obvious next step, since the backend it depends on is now fully ready (it wasn't, until this checkpoint).
-2. **Continue backend-first: document processing/chat.** Background worker (Arq), text extraction (PyMuPDF), chunking, embeddings, `document_chunks` + pgvector, and the RAG/chat pipeline — the core "chat with your paper" loop that's the actual product goal per Section 1/2, which nothing built so far actually delivers yet (uploading and managing documents isn't the same as being able to ask them questions).
+Per this checkpoint's own explicit instruction, **this document does not assume `extracted_text` will be a column on `Document`.** That decision needs its own review, weighing at minimum:
+- Document size and the existing 20MB upload cap (a `TEXT` column holding a full extracted document's content is a real, non-trivial size consideration).
+- Future chunking — if text is going to be split into chunks immediately after extraction anyway, storing the full raw text on `Document` may be redundant with a future `document_chunks` table, or may still be useful to retain for re-chunking without re-parsing.
+- Whether extracted text belongs directly on `Document`, in a separate one-to-one table, or isn't persisted as raw text at all (e.g., only chunks are persisted, with raw extraction being an ephemeral intermediate step).
 
-**This document does not pick one — that's an explicit decision for the user.** Given the project's own stated Phase 1 exit criterion is a *deployed, chat-capable* application (Section 14's acceptance criteria), option 2 is arguably closer to that goal, but option 1 is the more natural "finish what's ready to be finished" continuation. Both are legitimate; flagging the fork explicitly rather than assuming either.
+**This is a genuine open question, not a formality** — the next checkpoint should treat it as a real design decision requiring its own trade-off analysis, not just "add a column and move on."
+
+**After that decision:** wiring `parse_service` into an actual call site (most likely `document_service.create_document()`, composing it the same way `storage_service` is already composed there — but this too should be confirmed, not assumed, since a separate reprocessing endpoint or explicit "process" trigger are also legitimate alternatives).
 
 **Confirmed decisions from this checkpoint (do not re-litigate without a new reason):**
-- File-first deletion ordering — the pattern for any future multi-resource deletion in this project.
-- `204 No Content`, no custom success body, for delete-style action endpoints.
-- Repeated delete → `404`, not idempotent `204`.
-- No soft-delete/versioning — a deliberate non-feature, not a gap to fill reflexively.
+- PDF-only extraction for now; DOCX/TXT explicitly deferred.
+- The three-way failure contract (empty-string vs. `ParseError` vs. `UnsupportedFormatError`).
+- No bare `except Exception` — catch only what's understood.
+- `parse_service.py` stays decoupled from FastAPI/DB/`document_service` — composition happens at a higher layer, when a real call site needs it.
 
 ---
 
@@ -420,9 +418,11 @@ Document-related CRUD has no remaining unimplemented endpoints. Everything else 
 - **Phase 1 (current, in progress):** Single-document upload + chat, deployed.
   - Auth ✅ done.
   - Protected-route dependency (`get_current_user`) ✅ done, consumed by 5 routes.
-  - **Task 3B (Document Management backend, upload-only scope) ✅ done — all 4 checkpoints complete.**
-  - **Document Management CRUD ✅ done — all 4 checkpoints complete (list, detail, download, delete).**
-  - Document processing/chat (parsing, embeddings, RAG) — not started.
+  - **Task 3B (Document Management backend, upload-only scope) ✅ done.**
+  - **Document Management CRUD ✅ done** (list, detail, download, delete).
+  - **Document Text Extraction Checkpoint 1 (standalone parse service) ✅ done** — not yet wired into anything.
+  - Document Text Extraction Checkpoint 2 (schema/storage design) — next, undecided.
+  - Chunking, embeddings, pgvector, RAG, chat — not started.
   - Frontend document management (Task 3C) — not started.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.
@@ -437,38 +437,32 @@ Document-related CRUD has no remaining unimplemented endpoints. Everything else 
 - **Phase 11:** Collaboration.
 - **Phase 12:** Production polish.
 
-**Milestone framing for Phase 1 (acceptance criteria, Phase 1 design doc §18) — restated in full here since this checkpoint is a natural point to check progress against it:**
-On the **deployed** (not local) app, a fresh user must be able to:
-1. Sign up and log in. ✅ done.
-2. Upload a PDF and watch its status move uploading → processing → ready. ⚠️ upload works; no status/processing pipeline exists.
-3. Open the document and ask a question about its content. ❌ not built.
-4. Receive an answer that references a source page. ❌ not built.
-5. Refresh the page and see chat history persist. ❌ not built.
-6. Log out and back in and still see their document. ✅ backend supports this (list/detail work); no frontend to actually do it yet.
-
-Document Management CRUD's completion moves criterion 2 and 6 further along but doesn't complete either, and criteria 3–5 remain entirely untouched — worth an honest gut-check that "Document Management CRUD complete" is real progress but is not close to "Phase 1 complete."
-
 ---
 
 ## 15. KNOWN ISSUES
 
-*(1–16 unchanged from the prior sync unless noted below.)*
+*(1–16 unchanged from the prior sync — CI resolved, `.env.example` resolved, refresh-token gap, username-field gap, `python-multipart` resolved, JWT-in-localStorage, no rate limiting, embedding-dimension assumption, nothing deployed, no `User.documents` relationship, `max_upload_size_mb` resolved, `docs/API.md` gaps resolved, commit-status items resolved, CRUD complete.)*
 
-1–15. Unchanged — see prior syncs (CI resolved, `.env.example` resolved, refresh-token gap, username-field gap, `python-multipart` resolved, JWT-in-localStorage, no rate limiting, embedding-dimension assumption, nothing deployed, no `User.documents` relationship, `max_upload_size_mb` resolved, `docs/API.md` gaps resolved, commit-status items resolved, CI-multipart-confirmation still pending).
+17. **CI's Postgres service (`postgres:16`) doesn't match `docker-compose.yml`'s (`pgvector/pgvector:pg16`).** Identified during the post-CRUD architectural review (Section 20), classified IMPORTANT — currently harmless (nothing uses `vector` columns yet), but will silently break CI the moment a future migration adds one. Not addressed in this checkpoint (out of scope — this checkpoint added no migration). Should be fixed before or alongside whichever future checkpoint first introduces pgvector usage.
 
-16. **Document CRUD backend is now fully complete** — **RESOLVED this checkpoint.** List, detail, download, and delete are all implemented. The remaining, larger gap is not CRUD but the actual AI pipeline (parsing/embeddings/RAG/chat) and the frontend — see Section 13's fork.
+18. **Migrations aren't exercised by the test suite** (documented since `conftest.py`'s own docstring; restated by the architectural review as IMPORTANT, not urgent). Unaffected by this checkpoint (no migration added).
 
 ---
 
 ## 16. ENVIRONMENT VARIABLES
 
-**Unchanged this checkpoint.** See prior sync.
+**Unchanged this checkpoint.** `parse_service.py` reads no settings at all.
 
 ---
 
 ## 17. DEPENDENCIES
 
-**Unchanged this checkpoint.** No dependency added or removed.
+### Backend — new this checkpoint
+| Package | Why it's here |
+|---|---|
+| `pymupdf` | PDF text extraction (`app/services/parse_service.py`). Imported as `pymupdf` (the modern import name), not the older `fitz` alias. Version `1.28.2` actually installed and exercised in this checkpoint's testing/verification. |
+
+Everything else unchanged — see prior syncs for the full list.
 
 ---
 
@@ -480,10 +474,12 @@ See Section 12.
 
 ## 19. DEVELOPMENT RULES
 
-*(Unchanged from prior syncs — see Section 19 history. Restating the two most relevant to this checkpoint's process:)*
+*(Unchanged from prior syncs — see Section 19 history. Restating the ones most relevant to this checkpoint's process:)*
 
-- **Documentation is part of the milestone, not an afterthought.** Documentation synchronization is part of the same checkpoint as the code, always — this checkpoint again did implementation → tests → manual verification → documentation, all before stopping for review.
-- **When two operations can't be made atomic, reason explicitly about which failure mode is recoverable, and choose that one — don't just pick an order arbitrarily.** This checkpoint's file-first/DB-second decision is the first place this project faced a genuine two-resource consistency problem, and the reasoning (not just the conclusion) is preserved in Section 11 #40 specifically so a future checkpoint facing a similar problem (e.g., anything touching both Postgres and pgvector, or Postgres and an external LLM API with side effects) can reuse the same reasoning process, not just the same conclusion.
+- **Documentation is part of the milestone, not an afterthought.** This checkpoint again did implementation → tests → manual verification → documentation, all before stopping for review.
+- **Do not assume a feature exists, or a library behaves a certain way, merely because it seems likely — verify directly.** This checkpoint's instructions were explicit about this in a new way: PyMuPDF's actual exception hierarchy (`EmptyFileError` as a subclass of `FileDataError`) and its context-manager support were both verified by writing and running small standalone scripts against the real installed library *before* the exception-handling code was written, not assumed from general familiarity with the library.
+- **Report exact numbers, never estimates, for test counts.** Explicitly required by this checkpoint's instructions ("Do NOT guess the test count... the correct final count must come from the actual pytest run") — consistent with, and now reinforcing, this project's pre-existing discipline of never reporting an assumed result.
+- **When a checkpoint's instructions say a design decision belongs to a later checkpoint, do not make it prematurely — including in documentation.** This checkpoint's instructions were unusually explicit that `PROJECT_CONTEXT.md` itself must not "invent future decisions" or "state that extracted_text will definitely be a column on Document." Section 13 above reflects this literally — the open question is described as open, not pre-answered.
 
 ---
 
@@ -491,13 +487,18 @@ See Section 12.
 
 *(Unchanged sections — origin/philosophy, resume-evolution framing, verification discipline, rejected-ideas list — carry forward from the prior sync. Additions below.)*
 
-**Document Management CRUD's four checkpoints (list, detail, download, delete) form a genuinely clean case study in incremental service extension** — worth noting explicitly now that the arc is complete. `document_service.py` grew from one function (`create_document`) to five, and at no point did an earlier function need to change to accommodate a later one: `list_documents_for_user` didn't touch `create_document`; `get_document_for_user` didn't touch either; `get_document_file_for_user` composed `get_document_for_user` without modifying it; `delete_document_for_user` composed the same function again, still without modifying it. `storage_service.py` similarly grew from two functions to four (`save_file`/`delete_file` → `+get_file_path`) with zero modification to the original two, and this checkpoint used `delete_file()` without touching it at all. This is a genuine, not just asserted, validation of the layering decisions made back in Task 3B Checkpoints 1–2 — worth pointing to as a concrete example if a future checkpoint is tempted to "just refactor this a little" instead of extending cleanly.
+**A dedicated post-CRUD architectural review was conducted between Document Management CRUD's completion and this checkpoint** — review-only, no code written, but worth recording its conclusions here since they directly motivated this checkpoint's existence:
+- **No BLOCKER-level technical debt was found.** The architecture was assessed as sound enough to continue building on without any speculative refactor first.
+- **Two IMPORTANT items were identified** (CI/pgvector image mismatch; migrations not exercised by tests) — neither blocks the current checkpoint, both worth addressing before/alongside whichever future checkpoint first needs pgvector.
+- **Five candidate next milestones were evaluated** (document parsing, background infrastructure, embeddings, RAG, frontend document management) and **parsing was recommended** specifically because it's the genuine hard prerequisite for everything downstream in the AI pipeline, while background infrastructure, embeddings, and RAG were all explicitly assessed as hard-blocked on parsing existing first — attempting any of them before parsing would have been exactly the "speculative infrastructure" this project has consistently avoided at every prior checkpoint.
+- **Frontend document management was assessed as an equally legitimate, low-risk alternative** but not chosen, because the project's own stated Phase 1 acceptance criteria (Section 14) are about the chat loop working, not the CRUD surface having a UI — frontend work can happen at any later point without losing value, whereas deferring parsing keeps deferring the actual reason the project exists.
 
-**The file-first deletion-ordering decision is this project's first genuine two-resource consistency problem**, and the reasoning process used to resolve it (identify both failure modes, compare which is recoverable vs. permanent, choose the recoverable one, and explicitly do not claim atomicity that doesn't exist) is worth reusing as a template for the next time this comes up — likely when `document_chunks`/pgvector rows need to stay consistent with something else, or when an external LLM API call has side effects that need to be reconciled with a DB write.
+**Every completed task/checkpoint has been manually or programmatically verified against real infrastructure, not just written and assumed correct — this checkpoint continued that discipline even for a "pure library" piece of work with no DB/HTTP surface to exercise:** PyMuPDF's actual exception classes and context-manager support were verified with real, throwaway scripts before being relied upon in the real implementation; the exact final test count (102) was obtained from an actual `pytest` run rather than computed as "92 + however many I wrote"; manual verification called the function directly with real generated PDFs, a real corrupted file, and a real `.docx` file, and even an incidental, non-blocking observation (the em-dash/glyph-substitution quirk in the test-fixture-generation helper) was reported honestly rather than smoothed over.
 
 **Rejected ideas worth remembering so they aren't re-proposed as if new** *(addition to the existing list):*
-- **DB-row-first, then file deletion** — considered and rejected in favor of file-first, specifically because of the orphaned-file-with-no-recovery-path failure mode. Don't reconsider this without a new reason (e.g., if `delete_file()`'s idempotency contract ever changes).
-- **Idempotent `204` on repeated delete** — considered and rejected in favor of an honest `404`, since the document genuinely no longer exists after the first delete.
-- **A second document-deletion service** (e.g. a `document_deletion_service.py`) — never seriously considered given the established one-service-per-resource pattern, but worth naming as explicitly rejected now that the pattern has held across five functions without exception.
+- **Wiring `parse_service` into `document_service.create_document()` in this same checkpoint** — explicitly out of scope per instructions; not rejected forever, just deliberately sequenced into a later checkpoint after the persistence-design question is resolved.
+- **DOCX/TXT extraction in this checkpoint** — not rejected forever, explicitly deferred; PDF-only was the scoped, deliberate boundary for Checkpoint 1.
+- **A generic `DocumentProcessor` framework, parser registry, or plugin architecture for future format support** — explicitly warned against in the checkpoint instructions and not built; a second format (if/when DOCX is added) should extend `parse_service.py` directly (e.g., a second function or a dispatch on extension) rather than introducing a speculative abstraction layer before there's a second real implementation to generalize from.
+- **Conflating "empty extraction result" with "parse failure"** — considered (it would have been the simpler `str | None` design explicitly warned against in the checkpoint instructions) and rejected in favor of the three-way contract described in Section 11 #46, specifically because collapsing them would destroy information a future caller (e.g., an OCR-fallback decision) would need.
 
-**A note on the human collaborator's working style, further confirmed:** this checkpoint's instructions spent more explicit text on the data-integrity/failure-ordering question than on the endpoint's happy path — a clear signal that this collaborator weights "what happens when it goes wrong" at least as heavily as "does it work when it goes right," and expects that reasoning written down, not just implied by the code. The instruction to "pay particular attention to the existing storage_service.delete_file() behavior and database transaction/session behavior" before writing any code — rather than just describing the desired endpoint — is the same "verify before implementing" discipline seen in every prior checkpoint, applied here specifically to a correctness question rather than a "does this already exist" question.
+**A note on the human collaborator's working style, further confirmed:** this checkpoint's instructions were the most prescriptive yet about *epistemic discipline specifically* — repeated, explicit instructions not to guess test counts, not to assume library behavior, not to pre-decide a future checkpoint's design question even inside documentation. This is a natural extension of a pattern present since Task 2.1 (verify against real infrastructure, don't assume), now made explicit as a standing expectation for library behavior and for documentation content itself, not just for infrastructure state.

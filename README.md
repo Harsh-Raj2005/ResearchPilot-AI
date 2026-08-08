@@ -16,8 +16,11 @@ end-to-end — `POST /api/v1/documents/upload`, `GET
 /api/v1/documents`, `GET /api/v1/documents/{document_id}`, `GET
 /api/v1/documents/{document_id}/file`, and `DELETE
 /api/v1/documents/{document_id}` are all live, with consistent
-ownership isolation and indistinguishable 404s throughout. Document
-parsing, embeddings, RAG, and chat are not implemented yet. See
+ownership isolation and indistinguishable 404s throughout. A
+standalone PDF text-extraction service (`app/services/parse_service.py`)
+now exists and is fully tested, but **is not yet wired into upload or
+any endpoint** — uploaded documents are not automatically parsed yet.
+Embeddings, RAG, and chat are not implemented. See
 `docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
 for the task-by-task history.
 
