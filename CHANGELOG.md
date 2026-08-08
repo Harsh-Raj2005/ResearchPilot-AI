@@ -266,3 +266,38 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - No listing/detail/download/delete endpoints — upload only, per this
   checkpoint's scope. Code committed but not yet pushed as of this
   documentation sync.
+
+### Task 3B — Checkpoint 4: Housekeeping (final checkpoint of Task 3B)
+- `backend/.env.example`: documented the storage configuration that's
+  been live in code since Checkpoints 2–3 but never added here —
+  `UPLOAD_DIR`, `ALLOWED_UPLOAD_EXTENSIONS`, `MAX_UPLOAD_SIZE_MB`. No
+  speculative variables added; all three already have real defaults
+  and real effects in the running app.
+- `.gitignore`: added `backend/storage/uploads/` — uploaded files are
+  user content and must never be tracked in git.
+- `docker-compose.yml`: added a named volume (`uploads_data`) mounted
+  at `/app/storage/uploads` (the container path corresponding to
+  `UPLOAD_DIR`'s default), nested under the existing `./backend:/app`
+  bind mount. Uploaded files now persist in a real Docker volume
+  (survives container recreation, doesn't get dumped into the host's
+  git-tracked `backend/` folder) while the rest of the app code still
+  hot-reloads via the bind mount, as before.
+- No application code changed — `storage_service.py`, `Document`,
+  the upload endpoint, and authentication are all untouched.
+- `docs/API.md` reviewed against the real routes: already accurate
+  (confirmed via direct diff against the previously-synced version) —
+  correctly documents only `POST /documents/upload` as implemented,
+  correctly notes list/detail/download/delete are not. No changes
+  needed.
+- Verified: full backend test suite still passes (50/50 — no test
+  count change, since this checkpoint touches no application code); `.env.example` values match `config.py`'s real
+  defaults; `.gitignore` pattern confirmed against a real test file
+  written to `backend/storage/uploads/` and cleaned up afterward;
+  `docker-compose.yml`'s mount path confirmed against the Dockerfile's
+  actual `WORKDIR`.
+- This completes all four planned Task 3B checkpoints (data layer,
+  storage service, upload API, housekeeping). Document list, detail,
+  download, and delete endpoints remain unimplemented and are not
+  part of this checkpoint's — or the originally-approved Task 3B
+  checkpoint plan's — scope; see `docs/PROJECT_CONTEXT.md` for what's
+  next.

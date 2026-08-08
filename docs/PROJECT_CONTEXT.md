@@ -30,9 +30,9 @@
 
 Other features mentioned in the original brainstorm but not yet scheduled into a specific phase: citation generator (APA/IEEE/ACM/BibTeX), AI mind maps, research timeline visualization, OCR for scanned PDFs, DOCX/TXT upload support (Phase 1 is PDF-only).
 
-**Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time (e.g. "Month 1: built citation-aware RAG chat" → "Month 2: added multi-document reasoning and literature review generation" → "Month 3: knowledge graph and research-gap detection"). The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
+**Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Within Phase 1: authentication is complete (signup + login, backend and frontend), `get_current_user` (Task 3A) is implemented and now has its **first real consumer** — the document data layer (Checkpoint 1), storage service (Checkpoint 2), and **authenticated upload endpoint (Checkpoint 3)** together form a working end-to-end path: a logged-in user can `POST /documents/upload` a PDF/DOCX/TXT and get back a real `Document` row with the file actually saved to disk. Nothing beyond upload exists yet — no listing, no detail view, no download, no delete. Nothing has been deployed yet (no live Railway/Vercel URLs exist yet). **Code for Checkpoint 3 is implemented, tested, and reviewed, but not yet committed or pushed as of this documentation sync.**
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Within Phase 1: authentication is complete, `get_current_user` (Task 3A) is live on a real route, and **Task 3B — Document Management (backend) is now fully complete across all four of its approved checkpoints**: data layer (1), storage service (2), authenticated upload API (3), and housekeeping (4, this one). A logged-in user can upload a PDF/DOCX/TXT and get back a real `Document` row with the file saved to a persistent location. **Important scope note carried forward from Checkpoint 3's planning:** Task 3B's four-checkpoint plan covered *upload* only — document listing, detail, download, and delete were explicitly excluded from every checkpoint and were never assigned to one. "Task 3B complete" means the approved plan is complete, not that full document CRUD exists. Nothing has been deployed yet.
 
 ---
 
@@ -74,7 +74,7 @@ Refresh page ──► chat history persists
 Log out and back in ──► document and chat history still there
 ```
 
-### End-to-end system flow for upload → chat (design target, Section 5 of the Phase 1 design doc — **partially implemented**)
+### End-to-end system flow for upload → chat (design target — **step 1 implemented, rest not**)
 ```
 1. Frontend: POST /api/v1/documents/upload (multipart file)              ✅ backend done (Checkpoint 3)
 2. Backend: save file to storage, insert `documents` row (status=uploading),
@@ -86,30 +86,30 @@ Log out and back in ──► document and chat history still there
 7. Backend: retrieval + prompt + LLM call                                 ❌ not built
 8. Frontend renders answer + citation                                     ❌ not built
 ```
-**Note:** the actual Task 3B implementation is synchronous (no `status`, no background worker) since Document Management explicitly excludes parsing — see Section 6. Checkpoint 3 delivers step 1 for real, against a real database and a real file on disk — verified manually, not just via tests.
 
 ### Features implemented so far
 1. **Email/username/password signup** — backend endpoint + frontend form, fully working and tested.
 2. **Login (JWT access token issuance)** — backend endpoint + frontend form, fully working and tested.
-3. **Frontend auth state** — React Context holds the access token and email, persisted to `localStorage`, with a login/logout-aware placeholder home page.
-4. **Health check endpoint** — real DB round-trip check (`SELECT 1`), returns 503 if DB unreachable.
-5. **`get_current_user` dependency** (`app/core/deps.py`) — the project's first protected-route wiring. **As of Checkpoint 3, this is no longer unconsumed** — `POST /documents/upload` is its first real route.
-6. **Document data layer** (`app/models/document.py`, Task 3B Checkpoint 1) — the `documents` table and `Document` model.
-7. **Storage service** (`app/services/storage_service.py`, Task 3B Checkpoint 2) — local-disk file save/delete, UUID filenames, extension validation.
-8. **Authenticated document upload** (`app/api/documents.py` + `app/services/document_service.py`, Task 3B Checkpoint 3) — `POST /api/v1/documents/upload`: accepts a multipart file, validates size and extension, saves it via `storage_service`, creates a `Document` row via the new `document_service`, and returns a `DocumentResponse`. This is the first time `get_current_user`, `storage_service`, and `Document` are composed together, and the first endpoint that writes real user data end-to-end.
+3. **Frontend auth state** — React Context holds the access token and email, persisted to `localStorage`.
+4. **Health check endpoint** — real DB round-trip check, returns 503 if DB unreachable.
+5. **`get_current_user` dependency** — the project's first protected-route wiring, live on `POST /documents/upload` since Checkpoint 3.
+6. **Document data layer** (`app/models/document.py`, Checkpoint 1) — the `documents` table and `Document` model.
+7. **Storage service** (`app/services/storage_service.py`, Checkpoint 2) — local-disk file save/delete, UUID filenames, extension validation.
+8. **Authenticated document upload** (`app/api/documents.py` + `app/services/document_service.py`, Checkpoint 3) — `POST /api/v1/documents/upload`, fully working end-to-end.
+9. **Document management housekeeping** (Checkpoint 4, this checkpoint) — `.env.example` now documents the real storage config (`UPLOAD_DIR`, `ALLOWED_UPLOAD_EXTENSIONS`, `MAX_UPLOAD_SIZE_MB`); `.gitignore` excludes uploaded files; `docker-compose.yml` gives uploads a persistent named Docker volume instead of relying only on the dev bind mount. No application behavior changed — this checkpoint is purely configuration and environment correctness.
 
 ### Features NOT yet implemented (in build order, per the Phase 1 design doc)
-- Document list/detail/download/delete endpoints (Task 3B Checkpoint 4 is housekeeping only; these endpoints aren't scheduled to a specific checkpoint yet — likely a follow-on to Task 3B or folded into Task 3C planning).
+- **Document list/detail/download/delete endpoints** — explicitly out of scope for all of Task 3B's four checkpoints; not yet assigned to any checkpoint or task. This is the most likely next backend milestone if the project continues down the document-management path before moving to parsing/chat.
 - Background worker (Arq) for text extraction → chunking → embedding.
 - `document_chunks` table + pgvector column + similarity search.
 - Chat session + chat message models and endpoints.
 - RAG service (retrieval + prompt assembly + LLM call).
 - Frontend: Dashboard page, Upload button, Document card, Document view page, PDF viewer, Chat panel (Task 3C).
-- Redis + Arq worker wiring into `docker-compose.yml` (explicitly deferred until the task that needs it).
+- Redis + Arq worker wiring into `docker-compose.yml`.
 - Deployment (Railway for backend/worker/Postgres/Redis, Vercel for frontend) — **nothing is deployed yet**.
 - Sentry error tracking.
 - Google OAuth login (deferred to Phase 2/12 by design).
-- Refresh-token flow / `POST /auth/refresh` (see Section 15 — the Phase 1 design doc specifies this but the implemented `TokenResponse` only carries an access token).
+- Refresh-token flow / `POST /auth/refresh` (see Section 15).
 
 ### Features explicitly postponed by design (not oversights — see Phase 1 design doc §3)
 | Feature | Deferred to | Why |
@@ -132,41 +132,32 @@ Log out and back in ──► document and chat history still there
 ## 3. CURRENT ARCHITECTURE
 
 ### Backend
-**FastAPI (Python, async).** Chosen over Django REST Framework (too batteries-included/ORM-first for this MVP) and Node/Express (would split the stack across two languages when Python is already doing the ML/RAG work). FastAPI gives native async, Pydantic-based request/response validation that doubles as data contracts, and auto-generated OpenAPI docs at `/docs`. It's also the de-facto standard for Python AI/RAG backends, so more reference code exists for the retrieval pipeline work ahead.
+**FastAPI (Python, async).** Chosen over Django REST Framework (too batteries-included/ORM-first for this MVP) and Node/Express (would split the stack across two languages). Native async, Pydantic-based validation, auto-generated OpenAPI docs.
 
 ### Frontend
-**React + TypeScript + Vite.** Chosen over Next.js (its SSR/routing conventions aren't needed for an authenticated dashboard app — SEO doesn't matter here) and Vue (smaller ecosystem for the chat/streaming UI kit needs). TypeScript catches API contract mismatches at compile time; Vite gives fast dev builds. Routing/state are owned directly (React Router + Context, no Redux/Zustand) rather than prescribed by a framework — deliberately avoiding a state library "before you feel the pain of not having one."
+**React + TypeScript + Vite.** Chosen over Next.js (SSR/routing not needed) and Vue (smaller ecosystem for the chat/streaming UI). No Redux/Zustand — Context + local state until proven insufficient.
 
 ### Database
-**PostgreSQL**, chosen for relational integrity across users/documents/chats, JSONB for future flexible metadata, and — critically — a mature vector extension.
+**PostgreSQL**, chosen for relational integrity plus a mature vector extension.
 
-**Vector store: `pgvector` (a Postgres extension), not a separate Qdrant service, for Phase 1.** This was an explicit pushback against the original idea notebook's "Postgres + Qdrant + Redis from day one" plan. Rationale: embeddings live in the *same* database as metadata, so Phase 1 has one database to run/back up/migrate instead of two. pgvector supports HNSW/IVFFlat indexing and comfortably handles hundreds of thousands of chunks — far beyond one user's paper collection. Because the schema keeps embeddings in their own table (`document_chunks`), **migrating to Qdrant later is a swap of one retrieval service, not a rewrite.** Qdrant is explicitly flagged as the Phase-4+ upgrade once multi-paper/multi-user scale justifies the operational cost.
+**Vector store: `pgvector`, not Qdrant, for Phase 1.** One database instead of two. Qdrant deliberately deferred to Phase 4+.
 
 ### Authentication
-**JWT (currently access-token only in the actual implementation)**, using **PyJWT** directly (not `python-jose`) and **`bcrypt`** directly (not `passlib`) — see Section 15 for why the implementation diverged from the Phase 0 doc's suggested libraries. Google OAuth via Authlib was planned but not started; deferred to Phase 2/12.
-- Stateless, scales horizontally, no server-side session storage needed.
-- Tradeoff accepted: the team owns token refresh/revocation logic themselves.
-- `get_current_user` (Task 3A) verifies the bearer token via `HTTPBearer`, not `OAuth2PasswordBearer` — chosen because `/auth/login` accepts a JSON body, not the OAuth2 password-flow's form-encoded contract. **As of Checkpoint 3, this dependency is live** on `POST /documents/upload` — the design has been exercised by a real request, not just unit tests.
+**JWT (access-token only)**, `PyJWT` direct, `bcrypt` direct. `get_current_user` uses `HTTPBearer` (not `OAuth2PasswordBearer`) since `/auth/login` accepts JSON, not OAuth2's form-encoded contract. Live on `POST /documents/upload` since Checkpoint 3.
 
 ### AI pipeline
-**Not built yet.** Planned design (from the Phase 1 design doc):
-- **PDF text extraction:** PyMuPDF (`fitz`) — fast, dependency-light, sufficient for chunking/chat. GROBID (structured title/authors/references extraction, the tool Semantic Scholar itself uses) is explicitly deferred to Phase 3 because it's a separate Java service.
-- **Chunking:** ~500 tokens per chunk, 50-token overlap.
-- **Embeddings:** called via an external embedding API (provider not yet locked in — Anthropic or OpenAI per the env var scaffolding), stored in the `document_chunks.embedding` pgvector column (`vector(1536)`, i.e. sized for OpenAI's `text-embedding-3-small`/`ada-002` dimensionality).
-- **Retrieval:** pgvector cosine/L2 similarity search, top-k=5, scoped to the one document being chatted with.
-- **LLM orchestration:** hand-rolled — **direct API calls + a custom `rag_service.py`, deliberately not LangChain.**
-- **LLM provider:** Claude or OpenAI, switchable via `LLM_PROVIDER` env var (planned, not yet in `config.py`).
+**Not built yet.** PyMuPDF for extraction, hand-rolled RAG (no LangChain/LlamaIndex), pgvector for retrieval — all planned, none implemented.
 
 ### Storage
-**Local disk for Phase 1 — implemented as of Task 3B Checkpoint 2, now actively used as of Checkpoint 3** (`app/services/storage_service.py`, called from `app/services/document_service.py`). Key implementation facts:
-- **Flat directory layout**: every file lives directly under `settings.upload_dir` (default `storage/uploads`, configurable via `UPLOAD_DIR`) as `<uuid4>.<extension>` — no per-user subdirectories.
-- **Stored filenames are UUID4 + the original extension**, never derived from the user-supplied filename — eliminates path-traversal risk entirely and guarantees no collisions.
-- **The original filename is preserved separately** — display-only, returned in `DocumentResponse.original_filename`, never used to construct a path.
-- **Extension-only validation** — `.pdf`, `.docx`, `.txt` by default. Validation happens *before* the upload directory is even created, so a rejected upload leaves zero filesystem footprint. **As of Checkpoint 3, this is also true of an oversized upload** — the size check happens before `document_service`/`storage_service` is ever called.
-- **`storage_path` records the actual path used at write time**, not recomputed from `stored_filename` + current config on every access.
-- **Deletes are idempotent** (no delete endpoint exists yet to exercise this in production, but the capability is tested).
-- **Decoupled from both FastAPI's `UploadFile` and the database** at the `storage_service` layer — the *composition* of these two now lives in `document_service.py` (Checkpoint 3), which is the appropriate place for it per the project's layering (routers stay thin, services compose).
-- A Railway persistent volume for production durability across deploys is a deployment-time follow-up, not a code change — already an accepted Phase-1 trade-off.
+**Local disk, fully operational as of Checkpoint 3, now with persistent Docker storage as of Checkpoint 4.**
+- **Flat directory layout**: `<upload_dir>/<uuid4>.<extension>`, no per-user subdirectories (Checkpoint 2 decision).
+- **UUID-based stored filenames**, never derived from user input — no path-traversal risk, no collisions.
+- **Extension-only validation** — `.pdf`, `.docx`, `.txt`; rejection leaves zero filesystem footprint (same for oversized uploads as of Checkpoint 3).
+- **Decoupled `storage_service`** (file I/O) from **`document_service`** (DB composition) — established in Checkpoints 2/3.
+- **New this checkpoint: Docker persistence.** `docker-compose.yml`'s `backend` service now mounts a named volume (`uploads_data`) at `/app/storage/uploads` — the container-path equivalent of `UPLOAD_DIR`'s default (`storage/uploads`), confirmed against the backend `Dockerfile`'s `WORKDIR /app`. This volume is nested *under* the existing `./backend:/app` bind mount used for local hot-reload; Docker resolves the more specific mount for that subpath, so uploaded files land in a real, container-lifecycle-independent volume instead of being written into the bind-mounted (and git-tracked) `backend/` folder on the host. The rest of the app code still hot-reloads via the bind mount, unchanged.
+- **New this checkpoint: `.gitignore` correctness.** `backend/storage/uploads/` is now explicitly ignored — verified with a real test file (created, confirmed `git add -A` skipped it, then removed).
+- **New this checkpoint: `.env.example` completeness.** `UPLOAD_DIR`, `ALLOWED_UPLOAD_EXTENSIONS`, and `MAX_UPLOAD_SIZE_MB` are now documented there, matching `config.py`'s real defaults exactly (verified by direct comparison, not assumed).
+- A Railway persistent volume for actual production deploys remains a deployment-time follow-up, not a code change — this checkpoint addresses local/dev Docker persistence only.
 
 ### Deployment (planned, nothing live yet)
 ```
@@ -176,19 +167,16 @@ Worker    →  Railway (second service, SAME image as backend, different start c
 Postgres  →  Railway managed Postgres (pgvector extension enabled)
 Redis     →  Railway managed Redis
 ```
-Everything on Railway (except the frontend on Vercel) to minimize the number of dashboards a solo dev juggles in Phase 1. **CI/CD:** GitHub Actions — lint + test on every PR (running `pytest` against a real Postgres service container, fixed in Task 2.2). CI has not yet been updated for `python-multipart` — since it's a plain `pip install -e ".[dev]"` step reading `pyproject.toml`, this should Just Work without a CI file change, but hasn't been confirmed by an actual CI run yet since Checkpoint 3 hasn't been pushed.
+**CI/CD:** GitHub Actions — Postgres service + real `pytest` run (fixed Task 2.2). `python-multipart` (added Checkpoint 3) still hasn't been confirmed by an actual CI run, since Checkpoint 3's code wasn't committed at the time of that sync — status of that commit is outside this conversation's visibility as of this checkpoint too.
 
 ### Future microservices
-- **Arq worker** (background jobs: PDF parsing, chunking, embedding) — same Docker image as the API, different start command. Introduced in the document-processing task, not before.
-- **GROBID** — Java container, Phase 3, for structured citation/author/reference metadata.
-- **Qdrant** — separate vector service, Phase 4+, only once multi-user scale makes pgvector's ceiling a real constraint.
-- **Sentry** — error tracking, planned from "Phase 1" per the Phase 0 doc but not yet integrated in code.
+- **Arq worker**, **GROBID**, **Qdrant**, **Sentry** — all still not integrated; unchanged this checkpoint.
 
 ---
 
 ## 4. TECHNOLOGY STACK
 
-### Backend (from `backend/pyproject.toml` — this is the actual installed dependency set, verified against the real file)
+### Backend (from `backend/pyproject.toml`)
 ```
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
@@ -208,298 +196,170 @@ pytest>=8.2.0
 pytest-asyncio>=0.23.0
 httpx>=0.27.0
 ```
-Python `>=3.11` required.
+**No new dependency this checkpoint** — housekeeping touches config/docs/Docker files only, no code.
 
-**New dependency this checkpoint: `python-multipart`** — required by FastAPI's `UploadFile`/multipart form parsing; without it, the upload endpoint would fail at request time, not import time. This is the dependency the project's docs have been anticipating needing since Task 3B planning began.
-
-**Planned but not yet added:** `arq` (or `celery`), a Postgres driver for pgvector types, an embedding/LLM SDK, `PyMuPDF`, a storage client if moving off local disk. `python-magic` deliberately deferred to Phase 12.
-
-### Frontend (from `frontend/package.json` — actual)
-```
-"dependencies": {
-  "react": "^19.2.8",
-  "react-dom": "^19.2.8",
-  "react-router-dom": "^7.18.2"
-},
-"devDependencies": {
-  "@types/node": "^24.13.3",
-  "@types/react": "^19.2.17",
-  "@types/react-dom": "^19.2.3",
-  "@vitejs/plugin-react": "^6.0.4",
-  "oxlint": "^1.75.0",
-  "typescript": "~6.0.2",
-  "vite": "^8.2.0"
-}
-```
-Linter is **oxlint**, not eslint. No frontend changes this checkpoint.
+### Frontend
+Unchanged. `react`, `react-dom`, `react-router-dom` + dev tooling.
 
 ### Database
-PostgreSQL 16 via the `pgvector/pgvector:pg16` Docker image. Two tables exist: `users` and `documents` — no model in the codebase yet uses the `vector` type. **As of Checkpoint 3, `documents` rows are actually created by real HTTP requests**, not only by tests.
-
-### Authentication
-`bcrypt` (direct library, not `passlib`) for password hashing; `pyjwt` (not `python-jose`) for JWT encode/decode. `get_current_user` (Task 3A) added no new dependency and, as of Checkpoint 3, is live on a real route.
-
-### ORM
-SQLAlchemy 2.0 (async, via `asyncpg`), using the modern `Mapped`/`mapped_column` typed-declarative style throughout. `Document` still has no `relationship()` to `User` — see Section 11 #19. Not needed by Checkpoint 3 either: `document_service.create_document()` takes `user_id` directly and constructs the FK column value, no ORM navigation required.
-
-### Migrations
-Alembic, configured for **async** migrations. Two migrations exist: `0618947abd34_create_users_table` and `23fed3dde01d_create_documents_table`. No new migration this checkpoint — `documents` schema is unchanged, only new code that writes to it.
+PostgreSQL 16 via `pgvector/pgvector:pg16`. Two tables: `users`, `documents`.
 
 ### File storage
-Local disk, implemented Checkpoint 2, **now actively invoked** by the upload endpoint (Checkpoint 3) rather than only exercised by its own unit tests.
-
-### Caching / background jobs
-**Not wired up yet.**
-
-### Deployment
-Docker, Docker Compose for local dev only, GitHub Actions for CI, Railway + Vercel as intended deploy targets (not yet actually deployed).
+Local disk, `app/services/storage_service.py`. **Now backed by a persistent Docker volume in local dev** (this checkpoint) — see Section 3.
 
 ### Environment management
-`pydantic-settings` (`app/core/config.py`). **New setting this checkpoint: `max_upload_size_mb`** (default 20) + `max_upload_size_bytes` property — the setting Checkpoint 2 deliberately deferred, now added exactly where that deferral said it would land: the endpoint layer.
-
-### AI stack
-Not implemented in code yet.
+`pydantic-settings` (`app/core/config.py`). **`.env.example` is now complete** — every setting `config.py` actually defines and uses has a documented entry, closing a gap that had persisted since Checkpoint 2 introduced `UPLOAD_DIR`/`ALLOWED_UPLOAD_EXTENSIONS` without adding them to the example file.
 
 ---
 
 ## 5. CURRENT PROJECT STRUCTURE
 
-This is the **actual** structure of the repository (excluding `node_modules/`, `.venv/`, `.git/` internals, `__pycache__/`, and `frontend/dist/`, which are all present but are build/dependency artifacts, not source):
-
 ```
 researchpilot/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                     # GitHub Actions — Postgres service + real pytest run (fixed Task 2.2)
-├── .gitignore
+│       └── ci.yml
+├── .gitignore                         # now ignores backend/storage/uploads/ (Checkpoint 4)
 ├── CHANGELOG.md
 ├── README.md
-├── docker-compose.yml                 # postgres + backend + frontend only (Task 1 scope)
+├── docker-compose.yml                 # now has a named volume for uploads (Checkpoint 4)
 ├── docs/
-│   ├── API.md                          # now includes Auth + Documents sections (Checkpoint 3 sync)
+│   ├── API.md                          # accurate as-is — verified via direct diff, no changes needed this checkpoint
 │   ├── ARCHITECTURE.md
 │   └── ROADMAP.md
 ├── backend/
 │   ├── .env                           # real local env file (gitignored)
-│   ├── .env.example                   # includes JWT_* vars (added Task 2.2); UPLOAD_DIR/etc still not added — Checkpoint 4
-│   ├── Dockerfile
+│   ├── .env.example                   # now documents UPLOAD_DIR/ALLOWED_UPLOAD_EXTENSIONS/MAX_UPLOAD_SIZE_MB (Checkpoint 4)
+│   ├── Dockerfile                     # WORKDIR /app (runtime stage) — confirmed, referenced by the new volume mount path
 │   ├── alembic.ini
 │   ├── alembic/
 │   │   ├── env.py
 │   │   ├── script.py.mako
 │   │   └── versions/
 │   │       ├── 0618947abd34_create_users_table.py
-│   │       └── 23fed3dde01d_create_documents_table.py   # Task 3B Checkpoint 1
+│   │       └── 23fed3dde01d_create_documents_table.py
 │   ├── app/
-│   │   ├── __init__.py
 │   │   ├── main.py                    # app factory: CORS + router registration (health, auth, documents)
 │   │   ├── api/
-│   │   │   ├── __init__.py
-│   │   │   ├── auth.py                # POST /auth/signup, POST /auth/login
-│   │   │   ├── documents.py           # POST /documents/upload (Task 3B Checkpoint 3) — get_current_user's first real consumer
-│   │   │   └── health.py              # GET /health (real DB round-trip check)
+│   │   │   ├── auth.py
+│   │   │   ├── documents.py           # POST /documents/upload — unchanged this checkpoint
+│   │   │   └── health.py
 │   │   ├── core/
-│   │   │   ├── __init__.py
-│   │   │   ├── config.py              # Settings: app/db/jwt/cors + upload_dir/allowed_upload_extensions/max_upload_size_mb
-│   │   │   ├── security.py            # hash_password/verify_password, create/decode JWT
-│   │   │   └── deps.py                # get_current_user (Task 3A) — consumed by documents.py as of Checkpoint 3
+│   │   │   ├── config.py              # unchanged this checkpoint — .env.example now documents what was already here
+│   │   │   ├── security.py
+│   │   │   └── deps.py
 │   │   ├── db/
-│   │   │   ├── __init__.py
-│   │   │   └── session.py             # async engine, AsyncSessionLocal, Base, get_db()
+│   │   │   └── session.py
 │   │   ├── models/
-│   │   │   ├── __init__.py            # imports every model — the Alembic discovery point
-│   │   │   ├── base.py                # TimestampMixin + BaseModel (uuid pk, __abstract__)
-│   │   │   ├── user.py                # User ORM model
-│   │   │   └── document.py            # Document ORM model (Task 3B Checkpoint 1) — no relationship() yet, see Section 11
+│   │   │   ├── base.py
+│   │   │   ├── user.py
+│   │   │   └── document.py
 │   │   ├── schemas/
-│   │   │   ├── __init__.py
-│   │   │   ├── auth.py                # SignupRequest, LoginRequest, UserPublic, TokenResponse
-│   │   │   └── document.py            # DocumentResponse (Task 3B Checkpoint 3) — excludes stored_filename/storage_path
+│   │   │   ├── auth.py
+│   │   │   └── document.py
 │   │   ├── services/
-│   │   │   ├── __init__.py
-│   │   │   ├── auth_service.py        # create_user, authenticate_user
-│   │   │   ├── document_service.py    # create_document (Task 3B Checkpoint 3) — composes storage_service + Document
-│   │   │   └── storage_service.py     # save_file/delete_file (Task 3B Checkpoint 2) — pure file I/O, no DB/HTTP dependency
+│   │   │   ├── auth_service.py
+│   │   │   ├── document_service.py
+│   │   │   └── storage_service.py
 │   │   └── workers/
-│   │       └── __init__.py            # empty — no worker tasks written yet
-│   ├── pyproject.toml                 # now includes python-multipart
-│   ├── researchpilot_backend.egg-info/
+│   ├── pyproject.toml
 │   └── tests/
-│       ├── __init__.py
-│       ├── conftest.py                # db_session + client fixtures, function-scoped engine
+│       ├── conftest.py
 │       ├── test_auth.py               # 12 tests
 │       ├── test_deps.py               # 5 tests
 │       ├── test_document_model.py     # 5 tests
-│       ├── test_documents_api.py      # 10 tests: upload endpoint (Task 3B Checkpoint 3), full HTTP-level via client fixture
+│       ├── test_documents_api.py      # 10 tests
 │       └── test_storage_service.py    # 18 tests
-└── frontend/
-    ├── .env.example                   # VITE_API_BASE_URL only
-    ├── Dockerfile
-    ├── index.html
-    ├── package.json
-    ├── package-lock.json
-    ├── src/
-    │   ├── App.tsx
-    │   ├── main.tsx
-    │   ├── index.css
-    │   ├── constants/routes.ts
-    │   ├── context/AuthContext.tsx
-    │   ├── hooks/useAuth.ts
-    │   ├── pages/LoginPage.tsx, SignupPage.tsx
-    │   ├── services/api.ts, auth.ts
-    │   └── types/auth.ts
-    ├── tsconfig.json / tsconfig.app.json / tsconfig.node.json
-    └── vite.config.ts
+└── frontend/                          # unchanged this checkpoint
 ```
 
 ### Purpose of every major folder
-- **`backend/app/api/`** — HTTP routing layer only. **Now has three routers**: `health`, `auth`, `documents`. Validates via Pydantic schemas, calls into `services/`, translates service-layer exceptions into HTTP status codes. No business logic and no direct DB access belongs here — `documents.py` follows this exactly: it reads the upload, checks the size cap (the one piece of validation that genuinely belongs at this layer, not deeper), and delegates everything else.
-- **`backend/app/core/`** — cross-cutting concerns. `deps.py`'s `get_current_user` is no longer purely theoretical — it's live on a route.
-- **`backend/app/db/`** — the async SQLAlchemy engine, session factory, declarative `Base`, and `get_db()`.
-- **`backend/app/models/`** — SQLAlchemy ORM model definitions only.
-- **`backend/app/schemas/`** — Pydantic request/response contracts. **Now has `document.py`** alongside `auth.py`.
-- **`backend/app/services/`** — business logic. **Now has three services**: `auth_service.py`, `storage_service.py`, and `document_service.py`. `document_service.py` is the first service in the project that *composes* two other pieces (a service and a model) rather than owning all its own logic directly — a natural consequence of `storage_service` being deliberately decoupled from the DB in Checkpoint 2.
-- **`backend/app/workers/`** — still empty.
-- **`backend/tests/`** — pytest suite. **Now has `test_documents_api.py`**, the project's first HTTP-level test file for anything beyond auth — exercises the full stack (router → service → storage + DB) via the existing `client` fixture, same pattern as `test_auth.py`.
-- **`frontend/`** — unchanged this checkpoint.
-- **`docs/`** — `API.md` now documents Auth (previously missing from the attached docs — a real gap predating this checkpoint, fixed as part of this sync) and Documents.
-
-Every later phase is meant to add files inside this existing structure — **no reorganization is expected or wanted.**
+Unchanged from the Checkpoint 3 sync — see prior sections. **No source files were created, deleted, or logically modified this checkpoint** — only `.env.example`, `.gitignore`, `docker-compose.yml`, and documentation. This is the one checkpoint in Task 3B that touches zero files under `app/`.
 
 ---
 
 ## 6. DATABASE DESIGN
 
-### Currently in the database (two tables exist, two migrations applied — unchanged this checkpoint)
-
-#### `users`
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | UUID | primary key, default `uuid4()` |
-| `email` | VARCHAR(255) | unique, indexed, not null |
-| `username` | VARCHAR(50) | unique, indexed, not null |
-| `hashed_password` | VARCHAR(255) | not null |
-| `is_active` | BOOLEAN | default `true`, not null |
-| `is_superuser` | BOOLEAN | default `false`, not null |
-| `created_at` / `updated_at` | TIMESTAMPTZ | server-generated |
-
-#### `documents` — implemented Task 3B Checkpoint 1, **now actually populated by real requests as of Checkpoint 3**
-| Column | Type | Constraints |
-|---|---|---|
-| `id` | UUID | primary key, default `uuid4()` |
-| `user_id` | UUID | FK → `users.id`, `ON DELETE CASCADE`, indexed, not null |
-| `original_filename` | VARCHAR(255) | not null |
-| `stored_filename` | VARCHAR(64) | unique, not null |
-| `content_type` | VARCHAR(100) | not null |
-| `file_size_bytes` | BIGINT | not null |
-| `storage_path` | VARCHAR(500) | not null |
-| `created_at` / `updated_at` | TIMESTAMPTZ | via `BaseModel` |
-
-**No schema change this checkpoint.** **Verified this checkpoint:** manually uploaded a real file via `curl` against the real dev database and confirmed via direct `psql` query that every column populated correctly — `user_id` matching the authenticated user, `stored_filename` matching the actual on-disk file, `storage_path` resolving to a real, readable file with matching bytes.
-
-### Planned but NOT yet created
-`document_chunks`, `chat_sessions`, `chat_messages` — unchanged from prior checkpoints, still out of scope.
-
-**"All future queries must filter by `user_id` at the query level"** — **this requirement is now actually implemented for the first time.** `document_service.create_document()` takes `user_id` explicitly and it's the only source of that column's value (from `current_user.id`, resolved by `get_current_user`) — a document can never be created for anyone other than the authenticated caller. (List/get/delete endpoints, which will need to *filter* by `user_id` rather than just *set* it, are not built yet.)
+**Unchanged this checkpoint.** Two tables: `users`, `documents`. See prior sections for full schema — no migration, no column change. Housekeeping checkpoints by definition don't touch the database.
 
 ---
 
 ## 7. IMPLEMENTED FEATURES
 
 ### Task 1 — Project skeleton
-**What it does:** Monorepo, FastAPI app factory, async DB engine/session, Alembic, health-check endpoint, React/Vite/TS frontend scaffold. Docker Compose brings up postgres + backend + frontend together.
-**Files:** `backend/app/main.py`, `backend/app/api/health.py`, `backend/app/db/session.py`, `backend/app/core/config.py`, `docker-compose.yml`, `frontend/src/*` scaffold.
+Monorepo, FastAPI app factory, async DB engine/session, Alembic, health check, React/Vite/TS scaffold.
 
 ### Task 2.1 — Database foundation
-**What it does:** `TimestampMixin`, `BaseModel`, `User` model, first Alembic migration.
-**Files:** `backend/app/models/base.py`, `backend/app/models/user.py`, `backend/app/models/__init__.py`, `backend/alembic/env.py`, `backend/alembic/versions/0618947abd34_create_users_table.py`.
+`TimestampMixin`, `BaseModel`, `User` model, first migration.
 
 ### Task 2.2 — Authentication foundation (backend)
-**What it does:** Password hashing, JWT, auth schemas, `create_user`/`authenticate_user`, `POST /auth/signup`/`POST /auth/login`. Fixed CI.
-**Files:** `backend/app/core/security.py`, `backend/app/schemas/auth.py`, `backend/app/services/auth_service.py`, `backend/app/api/auth.py`, `backend/app/core/config.py`, `.github/workflows/ci.yml`, `backend/.env.example`.
-**Tests:** 12.
+Password hashing, JWT, signup/login. 12 tests. CI fixed.
 
 ### Task 2.3 — Frontend authentication
-**What it does:** `AuthContext`/`AuthProvider`, `useAuth()`, `LoginPage`/`SignupPage`, routing shell.
-**Files:** `frontend/src/constants/routes.ts`, `frontend/src/types/auth.ts`, `frontend/src/services/auth.ts`, `frontend/src/context/AuthContext.tsx`, `frontend/src/hooks/useAuth.ts`, `frontend/src/pages/LoginPage.tsx`, `frontend/src/pages/SignupPage.tsx`, `frontend/src/App.tsx`, `frontend/src/services/api.ts`.
-**Verified with a real Chromium browser via Playwright.**
+`AuthContext`, `useAuth()`, login/signup pages, routing shell. Playwright-verified.
 
 ### Task 3A — `get_current_user` protected-route dependency
-**What it does:** `app/core/deps.py`'s `get_current_user()`. Extracts a bearer token via `HTTPBearer`, verifies via `decode_access_token()`, loads the `User`, uniform 401 on any failure.
-**Files:** `backend/app/core/deps.py`, `backend/tests/test_deps.py`.
-**Tests:** 5, called directly.
+First protected-route wiring. 5 tests, called directly (no route existed yet at that point).
 
 ### Task 3B — Checkpoint 1: Document data layer
-**What it does:** `app/models/document.py` (`Document` model) and the migration creating the `documents` table.
-**Files:** `backend/app/models/document.py`, `backend/app/models/__init__.py`, `backend/alembic/versions/23fed3dde01d_create_documents_table.py`, `backend/tests/test_document_model.py`.
-**Tests:** 5, called directly.
+`Document` model + migration. 5 tests.
 
 ### Task 3B — Checkpoint 2: Storage service
-**What it does:** `app/services/storage_service.py` — local-disk file save/delete, UUID filenames, extension validation, idempotent delete.
-**Files:** `backend/app/services/storage_service.py`, `backend/app/core/config.py` (added `upload_dir`, `allowed_upload_extensions`), `backend/tests/test_storage_service.py`.
-**Tests:** 18.
+`storage_service.py` — local-disk save/delete, UUID filenames, extension validation. 18 tests.
 
 ### Task 3B — Checkpoint 3: Document upload API
-**What it does:** `POST /api/v1/documents/upload` — the integration checkpoint composing `get_current_user` (Task 3A), `storage_service` (Checkpoint 2), and `Document` (Checkpoint 1) for the first time. Accepts a multipart file, enforces a size cap, saves the file, creates the DB row, returns a `DocumentResponse`.
-**Key decisions:**
-- **`max_upload_size_mb` (default 20) added and enforced in the router**, before `document_service`/`storage_service` is called — fulfills the deferral Checkpoint 2 documented (Section 11 #24: size enforcement belongs where the upload is first read, not the storage layer). An oversized upload leaves zero filesystem footprint, same principle already established for a rejected extension.
-- **New `document_service.py`**, not logic folded directly into the router — one function (`create_document`) so far, matching the project's layering and giving future list/get/delete endpoints an obvious home.
-- **`DocumentResponse` excludes `stored_filename`/`storage_path`** — internal storage details, mirroring `UserPublic` never exposing `hashed_password`.
-- **Status codes**: `422` disallowed extension, `413` oversized file, `500` genuine storage failure — established as the convention for future document endpoints to follow. Used the current (non-deprecated) FastAPI status constants (`HTTP_413_CONTENT_TOO_LARGE`, `HTTP_422_UNPROCESSABLE_CONTENT`) — a deprecation warning surfaced during the first test run and was fixed before finalizing.
-- **`content_type` trusted as declared by the client**, not independently verified — reaffirms the existing `python-magic`-deferred decision; the upload endpoint is the concrete place this decision is now visible in actual behavior.
-**Files:** `backend/app/api/documents.py` (new), `backend/app/services/document_service.py` (new), `backend/app/schemas/document.py` (new), `backend/app/main.py` (modified — router registration), `backend/app/core/config.py` (modified — `max_upload_size_mb`), `backend/pyproject.toml` (modified — `python-multipart`), `backend/tests/test_documents_api.py` (new).
-**Tests:** 10 new — auth required, invalid token rejected, PDF/DOCX/TXT success, response doesn't leak internal fields, file actually written to disk, disallowed extension rejected, oversized file rejected with zero footprint, two users upload independently with distinct IDs. 50/50 across the full suite, zero regressions.
-**Verified beyond pytest:** booted the real app against real Postgres, signed up/logged in a real user via real HTTP calls, uploaded a real PDF via `curl` and got a real `201` with correct fields, confirmed the file exists on disk with correct bytes, confirmed the `documents` row via direct `psql` query with every column correct, confirmed `401` with no token, confirmed `422` for a `.exe`, confirmed a mismatched declared Content-Type is accepted (extension governs, as designed) — all against a live running server, not just the test client.
-**Not yet done:** No list/detail/download/delete endpoints. **Code implemented, tested, and reviewed but not yet committed or pushed as of this documentation sync** — an explicit exception to this project's usual "implement → commit → document" cadence, called out here so it isn't lost.
+`POST /documents/upload` — `get_current_user`'s first real consumer, composes `storage_service` + `Document` via new `document_service.py`. `DocumentResponse` schema. `max_upload_size_mb` added. 10 tests. Verified against a real running server.
+
+### Task 3B — Checkpoint 4: Housekeeping (this checkpoint, final checkpoint of Task 3B)
+**What it does:** Closes out the three environment/infrastructure gaps left open by Checkpoints 2–3, and reviews documentation for accuracy. No application code touched.
+**Specifically:**
+- `backend/.env.example` — added `UPLOAD_DIR`, `ALLOWED_UPLOAD_EXTENSIONS`, `MAX_UPLOAD_SIZE_MB`, matching `config.py`'s real defaults exactly (verified by direct comparison).
+- `.gitignore` — added `backend/storage/uploads/`. Verified for real: created a fake upload file on disk, ran `git add -A` in a scratch copy of the repo, confirmed the file was correctly skipped, then removed both.
+- `docker-compose.yml` — added a named volume (`uploads_data`) mounted at `/app/storage/uploads`, nested under the existing dev bind mount. Verified the mount path against the backend `Dockerfile`'s actual `WORKDIR` (confirmed `/app`, not assumed), and validated the resulting YAML by actually parsing it with `pyyaml`, not just eyeballing indentation.
+- `docs/API.md` — reviewed against the real implemented routes; found already accurate (confirmed via a direct `diff` against the version already synced after Checkpoint 3) — correctly shows only `POST /documents/upload` as implemented, correctly notes list/detail/download/delete are not. No changes made.
+**Key decision:** the named volume is deliberately **nested under** the bind mount rather than replacing it — this preserves local dev's hot-reload behavior for code changes while giving uploaded files (binary, user-generated, shouldn't be git-tracked even accidentally) a proper Docker-managed persistence boundary. Docker's mount resolution handles the more-specific subpath mount correctly; this is a standard, supported pattern, not a workaround.
+**Files:** `backend/.env.example` (modified), `.gitignore` (modified), `docker-compose.yml` (modified), `CHANGELOG.md` (modified). No files created; no application files touched.
+**Tests:** no new tests — nothing to test at the unit level for config/Docker/gitignore files. Full existing suite re-run to confirm zero regressions: **50/50 passing**, matching the count from Checkpoint 3 exactly (as expected, since no application code changed).
+**Verified beyond pytest:** `.env.example` values diffed directly against `config.py`'s real defaults; `.gitignore` behavior tested with a real file in a real (scratch) git repository; `docker-compose.yml` validated as parseable, correct YAML with `pyyaml`, and its mount path cross-checked against the real `Dockerfile`.
+**This completes Task 3B's originally-approved four-checkpoint plan.** See Section 1 and Section 13 for what "complete" does and doesn't mean here.
 
 ---
 
 ## 8. AUTHENTICATION FLOW
 
-**Current state: access-token-only JWT.**
-
-### Signup / Login
-Unchanged since Task 2.2/2.3 — see prior sections of this document's history for full detail. `POST /auth/signup`, `POST /auth/login`.
-
-### Protected routes
-**No longer purely theoretical.** `get_current_user` (Task 3A) now has its first real consumer: every route in `app/api/documents.py` requires `Authorization: Bearer <access_token>`. Missing or invalid tokens return `401` — verified both by automated tests and by manual `curl` against a real running server.
-
-### Token verification
-`decode_access_token(token)` in `security.py`, called from `get_current_user`, called from `documents.py`'s `upload_document` route. The full chain has now been exercised end-to-end by a real HTTP request, not just by unit tests calling `get_current_user` directly (as Task 3A's own tests did, since no route existed yet at that point).
+**Unchanged this checkpoint.** See prior sections — signup, login, `get_current_user`, all as documented after Checkpoint 3.
 
 ---
 
 ## 9. API ENDPOINTS
 
-### Implemented (verified against actual `app/api/*.py` code, and now also against a live running server)
-
-| Method | Route | Purpose | Auth required? | Request | Response |
-|---|---|---|---|---|---|
-| GET | `/api/v1/health` | App + DB health check | No | — | `200`/`503` |
-| POST | `/api/v1/auth/signup` | Create a user account | No | `{ email, username, password }` | `201 UserPublic` / `409` / `422` |
-| POST | `/api/v1/auth/login` | Exchange credentials for a JWT | No | `{ email, password }` | `200 { access_token, token_type }` / `401` |
-| POST | `/api/v1/documents/upload` | Upload a PDF/DOCX/TXT (multipart, max 20MB) | **Yes** | `multipart/form-data`, field `file` | `201 DocumentResponse` / `401` / `413` / `422` / `500` |
-
-Full request/response detail now lives in `docs/API.md` (regenerated as part of this sync — it was previously missing the Auth section entirely, a gap predating this checkpoint).
-
-### Planned but NOT implemented
+**Unchanged this checkpoint — no route was added, modified, or removed.**
 
 | Method | Route | Purpose | Auth required? |
 |---|---|---|---|
-| POST | `/api/v1/auth/refresh` | Exchange refresh token for new access token | No |
-| GET | `/api/v1/auth/google/callback` | OAuth callback | No — deferred to Phase 2/12 |
-| GET | `/api/v1/documents` | List the current user's documents | **Yes** |
-| GET | `/api/v1/documents/{id}` | Get one document's metadata | **Yes** |
-| GET | `/api/v1/documents/{id}/file` | Return the actual stored file (view/download) | **Yes** |
-| DELETE | `/api/v1/documents/{id}` | Delete a document (DB row + stored file) | **Yes** |
+| GET | `/api/v1/health` | App + DB health check | No |
+| POST | `/api/v1/auth/signup` | Create a user account | No |
+| POST | `/api/v1/auth/login` | Exchange credentials for a JWT | No |
+| POST | `/api/v1/documents/upload` | Upload a PDF/DOCX/TXT (multipart, max 20MB) | **Yes** |
+
+`docs/API.md` reviewed this checkpoint and confirmed already accurate — no update needed.
+
+### Still NOT implemented
+| Method | Route | Purpose |
+|---|---|---|
+| POST | `/api/v1/auth/refresh` | Exchange refresh token for new access token |
+| GET | `/api/v1/documents` | List the current user's documents |
+| GET | `/api/v1/documents/{id}` | Get one document's metadata |
+| GET | `/api/v1/documents/{id}/file` | Return the actual stored file |
+| DELETE | `/api/v1/documents/{id}` | Delete a document |
+
+These four document endpoints remain unscheduled to any checkpoint or task, exactly as they were after Checkpoint 3.
 
 ---
 
 ## 10. CODING CONVENTIONS
 
-**Naming, folder organization, dependency injection, error handling, validation, response format** — all unchanged from prior checkpoints; see Section 10 history. `documents.py` and `document_service.py` follow every established convention exactly (thin router, service raises domain exceptions, router translates to HTTP, no DB access in the router).
-
-**One addition to the architecture principles list:** **A service can compose another service.** `document_service.create_document()` calls `storage_service.save_file()` directly — the first instance of this in the codebase (previously, `auth_service` didn't depend on any other service). This is a natural, not-speculative extension of the layering: `storage_service` was deliberately decoupled from the DB in Checkpoint 2 specifically so something else could add DB awareness on top of it, which is exactly what happened here.
+**Unchanged this checkpoint.** See prior sections. One new, narrow addition worth recording: **Docker volume mounts can be nested under a broader bind mount to give a specific subpath (like user-uploaded content) independent persistence semantics**, without needing a different top-level dev-vs-prod Compose file. Established this checkpoint as the pattern for `backend/storage/uploads/`; reusable if a similar need arises elsewhere.
 
 ---
 
@@ -511,36 +371,37 @@ Full request/response detail now lives in `docs/API.md` (regenerated as part of 
 4. **Arq preferred over Celery.**
 5. **PyMuPDF over `unstructured` or GROBID for Phase 1 PDF parsing.**
 6. **JWT over session cookies.**
-7. **`bcrypt` direct + `PyJWT` direct, instead of `fastapi-users`/`python-jose`+`passlib`.**
+7. **`bcrypt` direct + `PyJWT` direct.**
 8. **JWT stored in `localStorage`, not an httpOnly cookie.**
 9. **Signup does not return a token; frontend auto-logs-in after signup.**
-10. **The `/` route placeholder is inline in `App.tsx`, not a separate `HomePage.tsx` component.**
+10. **The `/` route placeholder is inline in `App.tsx`.**
 11. **Docker Compose is local-dev only; Redis and the worker service added only when needed.**
 12. **Everything on Railway except the frontend (Vercel).**
-13. **Streaming LLM responses is a nice-to-have for Phase 1, not a requirement.**
-14. **Test isolation via a function-scoped DB engine fixture, not module-scoped.**
+13. **Streaming LLM responses is a nice-to-have, not a requirement.**
+14. **Test isolation via a function-scoped DB engine fixture.**
 15. **Tests create schema via `Base.metadata.create_all()`/`drop_all()`, not real Alembic migrations.**
 16. **`HTTPBearer` over `OAuth2PasswordBearer` for `get_current_user`.**
 17. **Document Management (Task 3B) omits a `status` column.**
-18. **`python-magic` deferred for Task 3B** — extension + declared Content-Type validation only.
-19. **No `relationship()` between `User` and `Document`** (Task 3B Checkpoint 1) — still holds as of Checkpoint 3; `document_service` needed no ORM navigation, confirming the original reasoning (explicit `user_id` assignment is sufficient for creation; listing/filtering, when built, will use an explicit `select(...).where(Document.user_id == ...)` query, not a relationship traversal).
-20. **`stored_filename` tightened to `VARCHAR(64)`, computed rather than matched to a neighboring column.**
-21. **Storage service decoupled from both FastAPI's `UploadFile` and the database** (Task 3B Checkpoint 2) — **this decoupling is exactly what made Checkpoint 3 straightforward**: `document_service.py` could compose `storage_service` without either module needing to change.
-22. **Flat storage directory layout, no per-user subdirectories** (Task 3B Checkpoint 2).
-23. **`storage_path` stores the write-time path, not a value recomputed from current config on each read** (Task 3B Checkpoint 2).
-24. **`max_upload_size_mb` was not added in Checkpoint 2 — now added in Checkpoint 3, exactly as that deferral anticipated.** Enforced in `app/api/documents.py`, before any service call. Default 20MB, matching the Phase 1 design doc's original constraint.
+18. **`python-magic` deferred for Task 3B.**
+19. **No `relationship()` between `User` and `Document`.**
+20. **`stored_filename` tightened to `VARCHAR(64)`.**
+21. **Storage service decoupled from both FastAPI's `UploadFile` and the database.**
+22. **Flat storage directory layout.**
+23. **`storage_path` stores the write-time path.**
+24. **`max_upload_size_mb` added in Checkpoint 3, exactly as Checkpoint 2's deferral anticipated.**
+25. **A service may compose another service** (`document_service` → `storage_service`).
+26. **Status code conventions for document endpoints**: `422`/`413`/`500`.
+27. **`docs/API.md` was found missing its Auth section** during the Checkpoint 3 sync — fixed then; confirmed still correct now.
 
-25. **A service may compose another service** (Task 3B Checkpoint 3, new principle). `document_service.create_document()` calls `storage_service.save_file()` directly — not routed through the API layer, not duplicated. This is the first cross-service call in the codebase and is now the established pattern for composing previously-independent Checkpoint 1/2 pieces.
+28. **Named Docker volume nested under the existing bind mount, rather than replacing it or introducing a separate prod-style compose file** (Task 3B Checkpoint 4). The alternative — a second, "production-like" `docker-compose.prod.yml` without the bind mount — was considered implicitly and rejected as premature: nothing about deployment architecture has changed this checkpoint, and Compose remains explicitly local-dev-only per decision #11. Nesting the volume is the minimal change that gives uploaded files real persistence semantics (survive `docker compose down` without `-v`; never land in the git-tracked `backend/` folder even by accident) while leaving everything else about local dev exactly as it was.
 
-26. **Status code conventions for document endpoints established**: `422` for a disallowed file type, `413` for exceeding the size cap, `500` for a genuine storage failure. Chosen to be semantically precise (413 specifically for size, not folded into 422) and to use FastAPI's current non-deprecated status constants. Future document endpoints (list/get/delete) should follow this same convention rather than inventing new codes for similar situations.
-
-27. **`docs/API.md` was found to be missing its Auth section entirely** during this documentation sync — a gap that predates Checkpoint 3 (the section should have existed since Task 2.2). Fixed as part of this sync rather than propagated further. Worth noting for the next Claude: verify `docs/API.md` reflects every implemented route, not just the most recently added one, since this kind of gap can persist silently.
+29. **`.env.example` gap (missing `UPLOAD_DIR`/`ALLOWED_UPLOAD_EXTENSIONS`) existed since Checkpoint 2 and was only closed in Checkpoint 4**, per the originally-approved plan's own sequencing — this was scoped, not overlooked. Worth noting as a second instance (after the `docs/API.md` Auth-section gap found in Checkpoint 3) of this project catching a documented-but-unactioned gap during a dedicated housekeeping/sync pass rather than letting it linger — reinforcing Section 19's standing reminder to check for these periodically.
 
 ---
 
 ## 12. CURRENT TASK STATUS
 
-**Completed and verified (both by automated tests and, where noted, by real manual/browser/database/filesystem verification):**
+**Completed and verified:**
 - Task 1 — Project skeleton.
 - Task 2.1 — Database foundation.
 - Task 2.2 — Authentication foundation (backend).
@@ -549,27 +410,14 @@ Full request/response detail now lives in `docs/API.md` (regenerated as part of 
 - Task 3B Checkpoint 1 — Document data layer.
 - Task 3B Checkpoint 2 — Storage service.
 - Task 3B Checkpoint 3 — Document upload API.
+- **Task 3B Checkpoint 4 — Housekeeping. This closes out Task 3B's approved four-checkpoint plan.**
 
-**Git state:** per the user, Checkpoints 1 and 2 (and everything before) have been committed and pushed. **Checkpoint 3 has been implemented, tested, and reviewed but is explicitly NOT yet committed or pushed** as of this documentation sync — flagging this clearly since it's a deviation from the project's usual immediate-commit cadence. The original 5 commits remain the documented baseline:
-```
-9e92630 feat(frontend): implement authentication flow
-ee65cc5 feat(auth): implement JWT authentication foundation
-e778c91 chore(frontend): add package-lock.json
-956e513 feat(db): add user model and initial database migration
-c2011b7 feat: initialize ResearchPilot project skeleton
-```
-followed by (recommended messages, in order — not hashes; Checkpoint 3's message is recommended but not yet used since it isn't committed):
-- `feat(db): add BaseModel, TimestampMixin, and User model with initial migration` (Task 2.1)
-- `feat(auth): password hashing, JWT tokens, signup/login endpoints` (Task 2.2)
-- `feat(frontend): login/signup pages, auth context, centralized routes` (Task 2.3)
-- `feat(auth): add get_current_user protected-route dependency` (Task 3A)
-- `feat(documents): add Document model, migration, and model-level tests` (Task 3B Checkpoint 1)
-- `feat(documents): add storage service (local disk, Task 3B Checkpoint 2)` (Task 3B Checkpoint 2)
-- `feat(documents): add authenticated upload endpoint (Task 3B Checkpoint 3)` (Task 3B Checkpoint 3 — **pending commit**)
+**Task 3B: complete, with an explicit scope caveat.** All four approved checkpoints are done. Document list/detail/download/delete were never part of this plan and remain entirely unimplemented and unscheduled — "Task 3B complete" should not be read as "document management is fully built." See Section 13 for what's actually next.
+
+**Git state:** per the user, Checkpoints 1–3 have been committed and pushed. **Checkpoint 4's changes are implemented and verified but explicitly NOT yet committed or pushed** as of this documentation sync, per the user's own statement at the start of this checkpoint. Recommended commit message provided in this checkpoint's completion report (single commit, since code + docs are now one unit per the project's updated checkpoint-completion rule).
 
 **Not started at all:**
-- Task 3B Checkpoint 4 — housekeeping (`.env.example` needs `UPLOAD_DIR`/`ALLOWED_UPLOAD_EXTENSIONS`/`MAX_UPLOAD_SIZE_MB`, `.gitignore` needs the uploads directory, `docker-compose.yml` needs a volume).
-- Document list/detail/download/delete endpoints (not yet assigned to a specific checkpoint).
+- Document list/detail/download/delete endpoints — unscheduled.
 - Background worker, chunking, embeddings, pgvector usage.
 - Everything related to chat.
 - All frontend pages/components beyond auth (Task 3C).
@@ -577,25 +425,26 @@ followed by (recommended messages, in order — not hashes; Checkpoint 3's messa
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None in the sense of half-written features. Checkpoint 3 is fully working and tested for its own scope; it just hasn't been committed yet, which is a process state, not an implementation gap.
+**Partially completed work:** None. Every checkpoint through 4 is fully working and verified for its own scope.
 
 ---
 
 ## 13. NEXT TASK
 
-**Immediate:** Checkpoint 3's code needs to be committed and pushed (outside Claude's control — a manual step) before Task 3B Checkpoint 4 begins, per this project's checkpoint-completion rules (implementation + documentation both required, and implementation includes commit/push).
+**No checkpoint is currently in progress or pre-planned.** Task 3B's approved plan is fully executed. The next milestone needs a fresh planning conversation, choosing between (at least) two honest options carried forward from every prior sync:
 
-**Task 3B — Checkpoint 4: Housekeeping.** `.env.example` (add `UPLOAD_DIR`, `ALLOWED_UPLOAD_EXTENSIONS`, `MAX_UPLOAD_SIZE_MB`), `.gitignore` (ignore the uploads directory), `docker-compose.yml` (volume for uploads persistence). No logic changes — review-only checkpoint.
+1. **Extend document management** — plan and implement `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/file`, `DELETE /documents/{id}` (a "Task 3B extension" or new "Task 3D," naming TBD). This would complete the backend CRUD surface before any frontend work makes sense.
+2. **Task 3C — frontend document management UI** for the *upload-only* backend that exists today (upload form, document list rendered from... nothing yet, since there's no list endpoint — meaning option 1 likely needs to happen first, or a frontend-only "upload and confirm" flow without a list view would be the honest scope for a frontend task done before option 1).
 
-**After Checkpoint 4:** Document list/detail/download/delete endpoints are not yet scheduled to a specific checkpoint — likely either a Task 3B extension or the start of what was previously called Task 3C's backend half. Needs its own planning pass when that point is reached. Then: Task 3C frontend document management UI, plus extending `services/api.ts` to attach the `Authorization` header for the first time.
+**This document does not pick one — that's an explicit decision for the user, not something to infer.** Given option 2 is awkward without a list endpoint, option 1 (completing document CRUD) is the more natural next step, but this is an observation, not a recommendation to act on unprompted.
 
 **Confirmed decisions from planning (do not re-litigate without a new reason):**
 - `python-magic` skipped for Phase 1.
-- Both `GET /documents/{id}` and `GET /documents/{id}/file` in scope for whenever those endpoints are built.
-- No `status` column, no background worker.
+- No `status` column, no background worker in Document Management.
 - No `relationship()` between `User`/`Document`.
 - Flat storage directory layout.
-- `max_upload_size_mb` = 20, enforced at the endpoint layer — now implemented.
+- `max_upload_size_mb` = 20.
+- Docker volume nested under the bind mount, not a separate prod compose file (Checkpoint 4).
 
 ---
 
@@ -603,13 +452,10 @@ followed by (recommended messages, in order — not hashes; Checkpoint 3's messa
 
 - **Phase 1 (current, in progress):** Single-document upload + chat, deployed.
   - Auth ✅ done.
-  - Protected-route dependency (`get_current_user`) ✅ done (Task 3A), **now consumed by a real route (Checkpoint 3)**.
-  - Document data layer ✅ done (Task 3B Checkpoint 1).
-  - Storage service ✅ done (Task 3B Checkpoint 2).
-  - Document upload API ✅ done (Task 3B Checkpoint 3) — pending commit/push.
-  - Housekeeping (Task 3B Checkpoint 4) — next up.
-  - Document list/detail/download/delete — not yet scheduled to a checkpoint.
-  - Document processing/chat (parsing, embeddings, RAG) — not started, later within Phase 1.
+  - Protected-route dependency (`get_current_user`) ✅ done, consumed by a real route.
+  - **Task 3B (Document Management backend, upload-only scope) ✅ done — all 4 checkpoints complete.**
+  - Document list/detail/download/delete — not started, not scheduled.
+  - Document processing/chat (parsing, embeddings, RAG) — not started.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.
 - **Phase 3:** Notes, highlights, tags; GROBID metadata extraction.
@@ -623,15 +469,13 @@ followed by (recommended messages, in order — not hashes; Checkpoint 3's messa
 - **Phase 11:** Collaboration.
 - **Phase 12:** Production polish.
 
-**Milestone framing for Phase 1 (acceptance criteria, Phase 1 design doc §18):** unchanged — see prior sections. Upload now works toward criterion #2 ("upload a PDF and watch its status move..." — minus the status/processing part, which is later scope).
-
 ---
 
 ## 15. KNOWN ISSUES
 
 1. ~~**CI is stale.**~~ **RESOLVED in Task 2.2.**
-2. **`docs/ROADMAP.md`'s task log** kept current alongside each milestone.
-3. ~~**`backend/.env.example` is incomplete.**~~ **RESOLVED in Task 2.2** for JWT vars. **Still incomplete for storage settings** (`UPLOAD_DIR`, `ALLOWED_UPLOAD_EXTENSIONS`, `MAX_UPLOAD_SIZE_MB`) — Checkpoint 4 scope.
+2. **`docs/ROADMAP.md`'s task log** kept current alongside each milestone — Checkpoint 4 update included in this sync.
+3. ~~**`backend/.env.example` is incomplete.**~~ **RESOLVED in Task 2.2** for JWT vars, **now RESOLVED in Checkpoint 4** for storage vars too — no longer any known gap in `.env.example`.
 4. **The Phase 1 design doc's API sketch includes `POST /auth/refresh`; the actual implementation is access-token-only.**
 5. **The `users` table has a `username` field the design docs' schema sketch never included.**
 6. ~~**`python-multipart` is not yet a backend dependency.**~~ **RESOLVED in Checkpoint 3.**
@@ -639,31 +483,32 @@ followed by (recommended messages, in order — not hashes; Checkpoint 3's messa
 8. **No rate limiting anywhere yet** — deferred to Phase 12 by design.
 9. **`document_chunks.embedding` is planned as `vector(1536)`**, assuming a specific embedding model. No decision locked into code yet.
 10. **Nothing is deployed yet.**
-11. **`User.documents` / `Document.user` ORM relationships don't exist**, only the raw FK column. Deliberate (Section 11 #19) — confirmed still unneeded as of Checkpoint 3.
+11. **`User.documents` / `Document.user` ORM relationships don't exist.** Deliberate (Section 11 #19).
 12. ~~**`max_upload_size_mb` doesn't exist in config yet.**~~ **RESOLVED in Checkpoint 3.**
-13. **`docs/API.md` was missing its entire Auth section** until this documentation sync — a real gap that had existed since Task 2.2 and wasn't caught until now. **RESOLVED in this sync.** Worth a standing reminder to verify docs against the *complete* implemented surface periodically, not just the most recent addition.
-14. **Checkpoint 3's code is implemented and tested but not yet committed/pushed** as of this documentation sync — flagging so this doesn't get lost; commit/push is a prerequisite for the checkpoint being considered fully complete per this project's own rules.
-15. **`docs/API.md`'s note that CI hasn't been confirmed to pick up `python-multipart`** — should Just Work via `pip install -e ".[dev]"`, but hasn't been verified by an actual CI run since Checkpoint 3 isn't pushed yet.
+13. ~~**`docs/API.md` was missing its entire Auth section.**~~ **RESOLVED in the Checkpoint 3 sync**; re-confirmed accurate this checkpoint via direct diff.
+14. ~~**Checkpoint 3's code was not yet committed/pushed** as of its own documentation sync.~~ **Presumed resolved per the user's statement opening this checkpoint** (Checkpoints 1–3 committed and pushed).
+15. **CI still hasn't been confirmed to pick up `python-multipart`** by an actual run — status genuinely unknown from this conversation's vantage point, since neither Checkpoint 3's nor Checkpoint 4's commits have been pushed as of this sync.
+16. **Document list/detail/download/delete remain entirely unimplemented and unscheduled** — not a bug, but the most significant "known gap" in the project right now, restated here so it isn't lost among smaller items.
 
 ---
 
 ## 16. ENVIRONMENT VARIABLES
 
-### Currently defined and used in code (`app/core/config.py`)
+### Currently defined and used in code (`app/core/config.py`) — unchanged this checkpoint
 | Variable | Purpose | Default |
 |---|---|---|
 | `APP_NAME` | Display name | `"ResearchPilot AI"` |
 | `ENVIRONMENT` | `development` \| `production` | `"development"` |
 | `DATABASE_URL` | Async SQLAlchemy connection string | `postgresql+asyncpg://postgres:postgres@localhost:5432/researchpilot` |
-| `JWT_SECRET_KEY` | HMAC signing key — **must be overridden outside development** | `"dev-secret-change-me"` |
+| `JWT_SECRET_KEY` | HMAC signing key — must be overridden outside development | `"dev-secret-change-me"` |
 | `JWT_ALGORITHM` | JWT signing algorithm | `"HS256"` |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime | `30` |
 | `CORS_ORIGINS` | Comma-separated allowed frontend origins | `"http://localhost:5173"` |
 | `UPLOAD_DIR` | Local disk directory for saved files | `"storage/uploads"` |
 | `ALLOWED_UPLOAD_EXTENSIONS` | Comma-separated, dot-prefixed allow-list | `".pdf,.docx,.txt"` |
-| `MAX_UPLOAD_SIZE_MB` | Upload size cap, enforced at the endpoint layer (Checkpoint 3) | `20` |
+| `MAX_UPLOAD_SIZE_MB` | Upload size cap, enforced at the endpoint layer | `20` |
 
-### Currently in `backend/.env.example`
+### Currently in `backend/.env.example` — **now complete as of Checkpoint 4**
 ```
 APP_NAME="ResearchPilot AI"
 ENVIRONMENT=development
@@ -672,10 +517,14 @@ JWT_SECRET_KEY=dev-secret-change-me
 JWT_ALGORITHM=HS256
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
 CORS_ORIGINS=http://localhost:5173
-```
-**Note:** `UPLOAD_DIR`/`ALLOWED_UPLOAD_EXTENSIONS`/`MAX_UPLOAD_SIZE_MB` are all defined in `config.py` with working defaults, but **still not added to `.env.example`** — Checkpoint 4 scope.
 
-### Frontend (`frontend/.env.example`, real file)
+UPLOAD_DIR=storage/uploads
+ALLOWED_UPLOAD_EXTENSIONS=.pdf,.docx,.txt
+MAX_UPLOAD_SIZE_MB=20
+```
+Every variable `config.py` defines now has a matching, correctly-valued entry here — confirmed by direct comparison this checkpoint, not assumed. No previously-known gap remains in this file.
+
+### Frontend (`frontend/.env.example`)
 ```
 VITE_API_BASE_URL=http://localhost:8000
 ```
@@ -685,7 +534,6 @@ VITE_API_BASE_URL=http://localhost:8000
 
 ### Planned, not yet in code
 ```
-# Backend — later (well past Task 3B)
 REDIS_URL=redis://...
 JWT_REFRESH_EXPIRE_DAYS=7
 LLM_API_KEY=
@@ -697,29 +545,7 @@ EMBEDDING_API_KEY=
 
 ## 17. DEPENDENCIES
 
-### Backend (`backend/pyproject.toml`, actual)
-| Package | Why it's here |
-|---|---|
-| `fastapi` | Web framework |
-| `uvicorn[standard]` | ASGI server |
-| `pydantic` | Validation/serialization |
-| `pydantic-settings` | Config |
-| `sqlalchemy` | Async ORM |
-| `asyncpg` | Async Postgres driver |
-| `alembic` | Migrations |
-| `python-dotenv` | `.env` loading |
-| `bcrypt` | Password hashing |
-| `pyjwt` | JWT |
-| `email-validator` | Pydantic `EmailStr` |
-| `python-multipart` | **New (Checkpoint 3)** — required for `UploadFile`/multipart form parsing |
-| `pytest` / `pytest-asyncio` / `httpx` *(dev)* | Testing |
-
-**Needed soon but not yet added:** `arq`, an LLM/embedding SDK, `pymupdf`, possibly `pgvector` (the Python package). `python-magic` deliberately deferred to Phase 12.
-
-### Frontend (`frontend/package.json`, actual)
-Unchanged this checkpoint. `react`, `react-dom`, `react-router-dom` + dev tooling.
-
-**Needed soon:** a PDF viewer library, `services/api.ts` `Authorization` header injection (Task 3C).
+**Unchanged this checkpoint.** See prior sections. No dependency added or removed — Checkpoint 4 touches config/Docker/docs files only.
 
 ---
 
@@ -731,46 +557,45 @@ See Section 12.
 
 ## 19. DEVELOPMENT RULES
 
-- **Never rewrite working code.** Tasks 1 through 3B Checkpoint 3 are complete, tested, and manually verified. Extend them; don't rewrite them.
-- **Never change architecture without justification.** Layering, pgvector-over-Qdrant, no-LangChain, folder structure, deferred `relationship()`, flat storage layout — all deliberate, documented (Section 11).
+- **Never rewrite working code.** Tasks 1 through 3B Checkpoint 4 are complete, tested, and manually verified.
+- **Never change architecture without justification.**
 - **Always explain major design decisions before implementation.**
-- **Keep code production-ready.** Manual/real-infrastructure verification, not just "tests pass," is the bar — Checkpoint 3 was verified against a real running server with real curl requests, not just the test client.
+- **Keep code production-ready.** Manual/real-infrastructure verification, not just "tests pass" — this checkpoint specifically verified `.gitignore` against a real file in a real scratch repo, and `docker-compose.yml` against a real YAML parse and the real `Dockerfile`, rather than trusting the config "looked right."
 - **Preserve the existing folder structure.**
 - **Follow existing coding style** (Section 10).
-- **Avoid unnecessary abstractions** — no LangChain, no Redux/Zustand, no Qdrant, no GROBID, no React Query, no `python-magic` yet, no `status` column yet, no ORM `relationship()` yet, no per-user storage subdirectories yet — all deferred to the phase/checkpoint where the pain of not having them is actually felt.
+- **Avoid unnecessary abstractions.**
 - **Focus on scalable SaaS architecture.**
-- **Think like a senior backend engineer** — validate at the boundary, raise specific exceptions, write the test that would have caught the last bug.
-- **Documentation is part of the milestone, not an afterthought — and a checkpoint isn't complete without it.** As of this checkpoint, the project's own stated rule is explicit: a checkpoint requires BOTH implementation (code reviewed, tested, committed, pushed) AND documentation (synchronized, reviewed, committed, pushed, Claude Project updated) before it's considered done. This documentation sync is happening slightly out of the usual order — implementation is done but not yet committed/pushed — which is fine as a one-off but shouldn't become the norm; verify commit/push status before assuming a checkpoint is fully closed.
-- **Periodically verify docs against the *complete* implemented API surface, not just the newest addition** — `docs/API.md` silently missing its entire Auth section (Section 15 #13) is exactly the failure mode to watch for.
+- **Think like a senior backend engineer** — validate at the boundary, write the test (or, for non-code checkpoints, the verification) that would have caught the last bug.
+- **Documentation is part of the milestone, not an afterthought — and, as of this checkpoint, code + docs are treated as a single unit for housekeeping-style checkpoints specifically** (per the user's explicit instruction: "implementation + documentation are now one checkpoint," single commit). This is a slight refinement of the Checkpoint 3-era rule (separate implementation and documentation approval steps) for checkpoints where the "implementation" itself is largely documentation/config — worth carrying forward as the pattern for future housekeeping-style checkpoints, while feature checkpoints likely keep the two-step approval process.
+- **Periodically verify docs against the complete implemented surface** — this checkpoint did that for `docs/API.md` (confirmed accurate via diff, no drift found this time) and closed the long-standing `.env.example` gap.
 
 ---
 
 ## 20. PROJECT MEMORY
 
-**Origin and philosophy.** This project began as a brainstorm in `Project_Idea.ipynb`. The "Phase 0 Planning" doc pushed the scope down from "Postgres + Qdrant + Redis from day one" to "pgvector only, Qdrant later," and "GROBID from the start" to "PyMuPDF now, GROBID in Phase 3." **This push-the-scope-down instinct is a core, intentional pattern.** Task 3B's dropped `status` column, deferred `python-magic`, deferred `relationship()`, flat storage layout, and the deliberate Checkpoint-2-to-Checkpoint-3 deferral of `max_upload_size_mb` (now landed exactly where planned) are all the same instinct applied checkpoint by checkpoint.
+**Origin and philosophy.** Unchanged — see prior sections for the full history (the notebook origin, the scope-down instinct, the resume-evolution framing, the verification discipline). **Task 3B Checkpoint 4 is another instance of that scope-down instinct applied in reverse**: rather than adding new capability, it closes small, real gaps (missing env docs, missing gitignore entry, no upload persistence in Docker) that had been *correctly and deliberately deferred* by earlier checkpoints, exactly on schedule.
 
-**The "resume evolution" framing is load-bearing for scope decisions.** Deployment is the Phase 1 exit criterion, not a formality. Nothing is deployed yet.
-
-**Every completed task/checkpoint has been manually or programmatically verified against real infrastructure, not just written and assumed correct.** Checkpoint 3 continued this discipline concretely: real signup/login via curl, a real multipart upload against a real running server, a real file confirmed on disk with matching bytes, a real `documents` row confirmed via direct `psql` query with every column checked. Also worth recording: during manual verification, a shell scripting mistake (bad `${VAR:0:20}` substitution syntax) silently prevented a test file from being created, which then surfaced as a misleading local curl error — correctly diagnosed as a local file issue (not a server problem) via curl's own error code, rather than chasing a phantom server bug. Worth remembering as a reminder to read tool error codes precisely rather than assuming the most recently-touched system is at fault.
+**Every completed task/checkpoint has been manually or programmatically verified against real infrastructure, not just written and assumed correct.** Checkpoint 4 continued this even though its changes are "just config": the `.env.example` values were diffed against `config.py`'s real defaults rather than eyeballed; `.gitignore` was tested against a real file in a real scratch git repository, not just read for correct syntax; `docker-compose.yml` was validated as actually-parseable YAML with the real mount path cross-checked against the real `Dockerfile`'s `WORKDIR`, rather than trusting that the comment describing it was accurate. **This is the standing lesson worth carrying forward: "it's just config" is not a reason to skip verification — it's exactly the kind of change where a typo silently ships.**
 
 **Rejected ideas worth remembering so they aren't re-proposed as if new:**
-- LangChain/LlamaIndex — rejected for interview-defensibility (LlamaIndex reconsider-at-Phase-5 exception).
+- LangChain/LlamaIndex — rejected for interview-defensibility (Phase 5 exception for LlamaIndex).
 - Qdrant as Phase 1 vector store — rejected, pgvector instead (Phase 4+ exception).
 - GROBID in Phase 1 — rejected, too much operational complexity too early.
 - Django REST Framework, Node/Express — rejected for FastAPI.
 - Next.js, Vue — rejected for React + Vite + TS.
 - Redux/Zustand — rejected as premature.
-- Pinning `react-router-dom` to an older version — tried and reverted, reintroduced 13 other vulnerabilities.
+- Pinning `react-router-dom` to an older version — tried and reverted.
 - A separate temporary `HomePage.tsx` — rejected in favor of an inline `App.tsx` placeholder.
 - `passlib`/`python-jose`/`fastapi-users` — not used; direct `bcrypt`+`PyJWT` instead.
 - `OAuth2PasswordBearer` for `get_current_user` — rejected in favor of `HTTPBearer`.
-- A `status` column on `documents` — rejected for now, no processing pipeline exists.
-- `python-magic` for upload validation — not rejected forever, deferred to Phase 12.
-- `relationship()` between `User` and `Document` — not rejected forever, deferred to whichever checkpoint first needs `current_user.documents`. **Confirmed as of Checkpoint 3 that upload creation still doesn't need it.**
-- Per-user storage subdirectories (Task 3B Checkpoint 2) — rejected in favor of a flat layout.
-- `max_upload_size_mb` in the storage service (Task 3B Checkpoint 2) — not rejected, deliberately placed at the endpoint layer instead. **This is now done, in Checkpoint 3, exactly as planned.**
-- **Folding `document_service` logic directly into the router** (Task 3B Checkpoint 3) — considered and rejected in favor of a separate service module, to keep the router thin and give future list/get/delete endpoints a natural home, consistent with every other resource in the project.
+- A `status` column on `documents` — rejected for now.
+- `python-magic` for upload validation — deferred to Phase 12, not rejected forever.
+- `relationship()` between `User` and `Document` — deferred, not rejected forever.
+- Per-user storage subdirectories — rejected in favor of a flat layout.
+- `max_upload_size_mb` in the storage service — placed at the endpoint layer instead (done, Checkpoint 3).
+- Folding `document_service` logic directly into the router — rejected in favor of a separate service module.
+- **A second, prod-style `docker-compose.prod.yml` without the dev bind mount** (Task 3B Checkpoint 4) — implicitly considered and not pursued; Compose remains explicitly local-dev-only per decision #11, and nothing about deployment changed this checkpoint. The nested-volume approach solves the actual problem (upload persistence + not git-tracking binaries) without touching that boundary.
 
-**Future plans not yet scheduled to a specific phase:** citation generator, AI mind maps, research timeline visualization, OCR for scanned PDFs, DOCX/TXT upload support (now actually implemented as of Checkpoint 3, not just planned).
+**Future plans not yet scheduled to a specific phase:** citation generator, AI mind maps, research timeline visualization, OCR for scanned PDFs, DOCX/TXT upload support (implemented as of Checkpoint 3). **Document list/detail/download/delete** — flagged repeatedly across Checkpoints 3 and 4 as the most concrete, most obviously-next piece of unscheduled work, restated here one more time so it's the first thing the next Claude sees as a live option, not buried.
 
-**A note on the human collaborator's working style:** they value being told *why*, not just *what*, and push back constructively before approving non-trivial decisions. They explicitly formalized the "a checkpoint isn't complete until both code AND docs are committed/pushed" rule as of this checkpoint — meaning documentation syncs going forward should be treated as a hard gate, not a nice-to-have follow-up, and Claude should track (and surface, as done in Section 12/15 here) whenever a checkpoint's code hasn't been committed yet at sync time. They also continue to actively verify that attached documentation matches real repository state before trusting it — this project has twice now had attached-doc-vs-repository drift (once from a re-upload that didn't take, once from `docs/API.md` silently missing content since Task 2.2) that Claude caught by inspection rather than by assumption; continue defaulting to "verify, don't assume" for every documentation sync.
+**A note on the human collaborator's working style:** consistent through every checkpoint — told *why* not just *what*, expects trade-offs stated explicitly, pushes back before approving non-trivial decisions, and has now formalized that **housekeeping-style checkpoints (where "implementation" is largely config/docs) get a single combined commit and a single combined approval step**, distinct from feature checkpoints' two-step (implement-then-approve, then document-then-approve) process used through Checkpoint 3. Recognize which kind of checkpoint is being requested and match the right process rather than defaulting to one pattern for everything. They also continue to independently verify that documentation matches reality rather than trusting a prior sync's claim — this project has now caught real doc/repo drift three separate times (a stale Project attachment, a missing Auth section in `API.md`, and — checked explicitly this time — none found in `docs/API.md`, which is itself worth noting as a case where the verification came back clean rather than always finding a problem).

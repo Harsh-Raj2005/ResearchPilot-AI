@@ -7,6 +7,9 @@ venv/
 .pytest_cache/
 backend/.env
 
+# Uploaded documents (Task 3B) — user content, never committed
+backend/storage/uploads/
+
 # --- Node / frontend ---
 node_modules/
 frontend/dist/

@@ -2,9 +2,11 @@
 # separately (Railway + Vercel) per the Phase 1 design doc — this file
 # exists so the whole stack runs with one command on a dev machine.
 #
-# Scope per Task 1: backend + frontend + postgres only.
-# Redis and the worker service are added in the task that implements
-# document upload/processing, per "introduce new tech only when needed."
+# Scope per Task 1: backend + frontend + postgres only. Redis and the
+# worker service are still not added — they arrive with the parsing/
+# embedding task, per "introduce new tech only when needed." Task 3B
+# added local-disk document storage (no new service — just a volume
+# on the existing backend container, below).
 
 services:
   postgres:
@@ -39,6 +41,15 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      # Named volume for uploaded files (Task 3B Checkpoint 4), nested
+      # under the bind mount above at UPLOAD_DIR's container path
+      # (default storage/uploads -> /app/storage/uploads, since the
+      # Dockerfile's WORKDIR is /app). Docker resolves the more
+      # specific mount for that subpath, so uploads persist in a real
+      # volume (survives container recreation, isn't dumped into the
+      # host's git-tracked backend/ folder) while the rest of the app
+      # code still hot-reloads via the bind mount.
+      - uploads_data:/app/storage/uploads
 
   frontend:
     build:
@@ -53,3 +64,4 @@ services:
 
 volumes:
   postgres_data:
+  uploads_data:

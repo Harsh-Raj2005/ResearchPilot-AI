@@ -10,13 +10,15 @@ Built incrementally, one phase and one task at a time. See
 
 ## Current status
 
-**Phase 1, Task 3B Checkpoint 3 complete: authenticated document
-upload works end-to-end.** `POST /api/v1/documents/upload` composes
-the `documents` table (Checkpoint 1), the local-disk storage service
-(Checkpoint 2), and `get_current_user` (Task 3A) — its first real
-route consumer. Document listing, detail, download, and delete are
-not implemented yet. See `docs/PROJECT_CONTEXT.md` for full current
-state and `CHANGELOG.md` for the task-by-task history.
+**Phase 1, Task 3B complete (all four checkpoints): authenticated
+document upload works end-to-end, with local storage now persisted
+via a Docker volume in dev.** `POST /api/v1/documents/upload` composes
+the `documents` table, the local-disk storage service, and
+`get_current_user`. **Document listing, detail, download, and delete
+are not implemented** — that scope was explicitly excluded from every
+Task 3B checkpoint and remains unscheduled. See
+`docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
+for the task-by-task history.
 
 ## Stack
 
@@ -37,6 +39,7 @@ docker compose up --build
 - Backend: http://localhost:8000 (docs at `/docs`)
 - Frontend: http://localhost:5173
 - Postgres: localhost:5432
+- Uploaded documents persist in the `uploads_data` Docker volume
 
 ### Option B — run services individually
 
