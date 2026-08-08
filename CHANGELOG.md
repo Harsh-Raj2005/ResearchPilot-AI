@@ -559,3 +559,54 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   will decide the storage/schema question on its own terms (whether
   extracted text belongs on `Document` directly, a separate table, or
   something else — not decided or assumed here).
+
+### Document Text Extraction — Checkpoint 3: `document_texts` schema
+- **Approved design (Checkpoint 2) implemented: a separate table, not
+  a column on `Document`.** Added `app/models/document_text.py` —
+  `DocumentText(BaseModel)` with `document_id` (FK → `documents.id`,
+  `ON DELETE CASCADE`, `UNIQUE`, indexed — one index satisfies both
+  the uniqueness and index requirements) and `content` (`TEXT NOT
+  NULL`, must allow `""` for a valid-but-textless PDF, per
+  `parse_service`'s existing contract).
+- **No `relationship()`** on either `Document` or `DocumentText` —
+  same reasoning already established for `User`↔`Document`: nothing
+  needs ORM navigation yet.
+- **No `status`, `error`, `parser_version`, or versioning column** —
+  deliberately absent, per the approved design. Presence/absence of a
+  `document_texts` row is the only (implicit, minimal) signal
+  available at this stage; a real status mechanism is explicitly
+  future work once processing becomes asynchronous.
+- Registered in `app/models/__init__.py`, same pattern as every other
+  model.
+- Generated migration `f5a18872f21b_create_document_texts_table` via
+  `alembic revision --autogenerate`, hand-reviewed before applying —
+  autogenerate detected **only** the intended table and its unique
+  index, no unrelated changes. Verified against the real dev
+  database: `upgrade head` applies cleanly, `\d document_texts`
+  matches the approved schema exactly, `downgrade -1` removes
+  *only* `document_texts` (confirmed `users`/`documents` untouched),
+  `upgrade head` reapplies cleanly.
+- Added `tests/test_document_text_model.py` — 6 new tests: insertion
+  and retrieval, empty content persists successfully (not conflated
+  with failure), duplicate `document_id` rejected by the real
+  Postgres unique constraint, cascade delete when the parent
+  `Document` is deleted, a `DocumentText` referencing a nonexistent
+  `Document` is rejected by the real FK constraint (this project's
+  tests run against real Postgres, not SQLite, so this FK is
+  genuinely enforced, not merely assumed), and realistic multi-line
+  content (including embedded newlines) persists unchanged. **108
+  backend tests passing overall (102 pre-existing + 6 new), zero
+  regressions.**
+- Manually verified against the real dev database (not just the test
+  DB): real insertion with embedded-newline content preserved exactly,
+  real duplicate-`document_id` rejection, real empty-content
+  persistence (re-fetched fresh to confirm), real cascade delete.
+- **No dependency change** — no new package needed for a schema-only
+  checkpoint.
+- **Confirmed untouched, by direct `grep` after implementation, not
+  just by not having edited them:** `parse_service.py`,
+  `document_service.py`, `app/api/documents.py`, `app/models/document.py`,
+  `app/schemas/document.py`, `storage_service.py`. No upload wiring,
+  no parsing orchestration, no chunking, no embeddings, no status
+  tracking, no versioning, no background processing, no API endpoint
+  for extracted text.

@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management) and Document Management CRUD (list/detail/download/delete) are both fully complete. **A post-CRUD architectural review was conducted** (review-only, no code changes) to determine the most technically appropriate next milestone — see Section 20 for the full reasoning — and recommended **Document Text Extraction** as the next step, specifically because it's the genuine prerequisite for chunking/embeddings/RAG and carries the lowest risk of the candidates evaluated (no new external service, no new infrastructure). **Checkpoint 1 of that milestone is now complete: a standalone, fully-tested PDF text-extraction service exists, but is not wired into upload or any endpoint.** Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management) and Document Management CRUD are both fully complete. Document Text Extraction is 3-of-4-ish checkpoints in: **Checkpoint 1** (standalone PDF parser) and **Checkpoint 2** (design review — approved a separate `document_texts` table, not a column on `Document`) are complete, and **Checkpoint 3 (this checkpoint) implements that approved schema.** The `document_texts` table now exists in the real database with the exact constraints the design review specified, but **nothing writes to it yet** — no upload wiring, no parsing orchestration. Nothing has been deployed yet.
 
 ---
 
@@ -74,13 +74,13 @@ Refresh page ──► chat history persists
 Log out and back in ──► document and chat history still there
 ```
 
-### End-to-end system flow for upload → chat (design target — **upload + list + detail + download + delete implemented; a standalone, unwired parser now also exists; rest not**)
+### End-to-end system flow for upload → chat (design target — **upload+CRUD implemented; parser exists standalone; document_texts schema now exists but unpopulated; rest not**)
 ```
 1. Frontend: POST /api/v1/documents/upload (multipart file)              ✅ backend done
 2. Backend: save file to storage, insert `documents` row (status=uploading),
-   enqueue background job, return document_id immediately (202 Accepted)  ⚠️ synchronous, no status/worker (see Section 6)
+   enqueue background job, return document_id immediately (202 Accepted)  ⚠️ synchronous, no status/worker
 3. Frontend: redirects to dashboard, polls GET /documents/{id}/status     ❌ not built (but GET /documents/{id} metadata ✅ exists)
-4. Worker (Arq): extract text, chunk, embed, status -> ready              ❌ not built — extraction exists standalone (parse_service.py) but is NOT wired into this flow, NOT run on upload, and there is no worker
+4. Worker (Arq): extract text, chunk, embed, status -> ready              ❌ not built — parse_service exists, document_texts schema exists, NEITHER is connected to the other or to upload, and there is no worker
 5. Frontend: status becomes "ready", user opens document page             ❌ not built (but GET /documents listing ✅ exists)
 6. User sends chat message                                                ❌ not built
 7. Backend: retrieval + prompt + LLM call                                 ❌ not built
@@ -93,20 +93,23 @@ Log out and back in ──► document and chat history still there
 3. **Frontend auth state** — React Context holds the access token and email, persisted to `localStorage`.
 4. **Health check endpoint** — real DB round-trip check, returns 503 if DB unreachable.
 5. **`get_current_user` dependency** — the project's first protected-route wiring, live on all five document routes.
-6. **Document data layer** (`app/models/document.py`) — the `documents` table and `Document` model. **Unchanged this checkpoint** — no `extracted_text` column, no migration.
+6. **Document data layer** (`app/models/document.py`) — the `documents` table and `Document` model. **Unchanged this checkpoint** — no `extracted_text` column was ever added; the approved design deliberately keeps it off this table.
 7. **Storage service** (`app/services/storage_service.py`) — local-disk file save/delete, UUID filenames, extension validation, file location. **Unchanged this checkpoint.**
 8. **Document Management CRUD** — upload, list, detail, download, delete, all authenticated and ownership-isolated. **Unchanged this checkpoint.**
-9. **Standalone PDF text-extraction service** (`app/services/parse_service.py`, new this checkpoint) — `extract_text(file_path: Path) -> str`. PDF only; `.docx`/`.txt` explicitly rejected with `UnsupportedFormatError`. Raises `ParseError` for a missing, empty, or corrupted file; returns an empty string (not an error) for a valid PDF with no extractable text — these are deliberately different, undecided-to-conflate outcomes. Completely independent of FastAPI, HTTP, SQLAlchemy, `Document`, and `document_service.py` — mirrors `storage_service.py`'s own decoupling philosophy. **Not called from anywhere else in the codebase.**
+9. **Standalone PDF text-extraction service** (`app/services/parse_service.py`) — `extract_text(file_path: Path) -> str`. **Unchanged this checkpoint** — still not called from anywhere.
+10. **`document_texts` table** (`app/models/document_text.py`, new this checkpoint) — persists extraction output, per the design approved in Checkpoint 2. `id` (UUID PK), `document_id` (FK → `documents.id`, `ON DELETE CASCADE`, `UNIQUE`, indexed — enforces one-Document-to-zero-or-one-DocumentText at the database level), `content` (`TEXT NOT NULL`, explicitly allowed to be `""`), timestamps via the existing `BaseModel`. No `relationship()`, no `status`/`error`/`parser_version` column, no versioning — all deliberately deferred, per the approved design. **Nothing writes to this table yet — it exists as pure schema, unpopulated.**
 
 ### Features NOT yet implemented (in build order, per the Phase 1 design doc)
-- **Wiring `parse_service.extract_text()` into anything** — upload, a reprocess endpoint, a CLI tool. It exists and is tested in isolation only.
-- **A decision on how/where extracted text is persisted.** Explicitly not decided — see Section 13. Whether it becomes a column on `Document`, a separate table, or something else is an open question for the next checkpoint, not assumed here.
-- DOCX/TXT text extraction — explicitly out of scope for this checkpoint; not assumed to be "next."
+- **Wiring `parse_service.extract_text()`'s output into a `document_texts` row.** Both pieces exist independently now; composing them is the next checkpoint's job, not this one's.
+- Automatic parsing on upload, or any reprocessing/reparse trigger.
+- Parsing status tracking of any kind.
+- Extraction versioning.
+- DOCX/TXT text extraction.
 - Chunking, embeddings, `document_chunks` table, pgvector usage, similarity search.
-- Background worker (Arq), Redis — explicitly not introduced; see Section 11 for why (nothing slow enough yet to justify them).
+- Background worker (Arq), Redis.
 - Chat session + chat message models and endpoints.
 - RAG service (retrieval + prompt assembly + LLM call).
-- Frontend: Dashboard page, Upload button, Document card, Document view page, PDF viewer, Chat panel (Task 3C) — **untouched this checkpoint, per explicit instruction.**
+- Frontend: Dashboard page, Upload button, Document card, Document view page, PDF viewer, Chat panel (Task 3C) — untouched this checkpoint.
 - Deployment (Railway for backend/worker/Postgres/Redis, Vercel for frontend) — **nothing is deployed yet**.
 - Sentry error tracking.
 - Google OAuth login (deferred to Phase 2/12 by design).
@@ -128,9 +131,12 @@ Log out and back in ──► document and chat history still there
 | Rate limiting, email verification, forgot password | Phase 12 | Security hardening after the core loop is proven |
 | `python-magic` deep content-sniffing for uploads | Phase 12 | Extension + declared Content-Type validation is the Phase-1-appropriate rigor level |
 | Document versioning, restore/undelete, soft-delete | Not planned | Not part of the current model |
-| Redis, Arq, background workers | Deferred until something is demonstrably too slow synchronously | Explicit finding of the post-CRUD architectural review — introducing them now would be speculative infrastructure with nothing yet to justify them |
-| DOCX/TXT extraction | Undecided future checkpoint | Explicitly out of scope for Checkpoint 1; PDF-only was a deliberate, scoped decision, not a limitation to work around immediately |
-| Extracted-text persistence design | Undecided — open question for the next checkpoint | Deliberately not decided in Checkpoint 1; must weigh document size, the 20MB upload cap, future chunking, and whether text belongs on `Document` directly vs. a separate representation |
+| Redis, Arq, background workers | Deferred until something is demonstrably too slow synchronously | Post-CRUD architectural review finding — nothing yet justifies them |
+| DOCX/TXT extraction | Undecided future checkpoint | PDF-only was a deliberate, scoped Checkpoint 1 decision |
+| **Extracted-text persistence design** | **RESOLVED this checkpoint** | Checkpoint 2 reviewed the options; Checkpoint 3 implemented the approved schema. See Section 11. |
+| Extracted-text versioning | Not designed, not blocked | The 1:0..1 unique constraint can be relaxed later if real versioning is ever needed — a deliberate future migration, not designed speculatively now |
+| Parsing status / state machine | Deferred until async processing exists | Presence/absence of a `document_texts` row is the only signal available at this stage; a real status mechanism is explicit future work |
+| `GET /documents/{id}/text` | Not planned unless a real need emerges | Extracted text is internal processing state, not user-visible product content, per Checkpoint 2's explicit API-boundary analysis |
 
 ---
 
@@ -140,27 +146,27 @@ Log out and back in ──► document and chat history still there
 **FastAPI (Python, async).** Unchanged this checkpoint.
 
 ### Frontend
-**React + TypeScript + Vite.** Untouched this checkpoint, per explicit instruction.
+**React + TypeScript + Vite.** Untouched this checkpoint.
 
 ### Database
-**PostgreSQL**, `pgvector`. Unchanged this checkpoint — no migration, no schema change.
+**PostgreSQL**, `pgvector`. **Three tables now exist: `users`, `documents`, `document_texts`** (new this checkpoint). One new migration.
 
 ### Authentication
-**JWT (access-token only)**, unchanged this checkpoint. `get_current_user` still consumed by exactly five routes — this checkpoint added no new route.
+**JWT (access-token only)**, unchanged this checkpoint. `get_current_user` still consumed by exactly five routes.
 
 ### AI pipeline
-**Still not built as an integrated pipeline**, but its first real primitive now exists in isolation: **PDF text extraction** (`app/services/parse_service.py`). Design per the Phase 1 doc: PyMuPDF for extraction (now actually added and used, not just planned), hand-rolled RAG (no LangChain/LlamaIndex), pgvector for retrieval — extraction is implemented; chunking, embeddings, retrieval, and RAG remain entirely unimplemented.
+**Still not built as an integrated pipeline**, but its second real primitive now exists: **persistence for extraction output** (`document_texts`), alongside the first (`parse_service`, Checkpoint 1). Neither is connected to the other yet, nor to upload. Design per the Phase 1 doc: PyMuPDF for extraction (implemented, Checkpoint 1), a dedicated persistence table (implemented, this checkpoint), hand-rolled RAG (no LangChain/LlamaIndex), pgvector for retrieval — chunking, embeddings, retrieval, and RAG remain entirely unimplemented.
 
-**Why extraction was built as a standalone, decoupled service rather than wired directly into upload:** this was an explicit checkpoint requirement, and it independently matches the project's established pattern (`storage_service.py` was built the same way, and that decoupling is exactly what made composing it into `document_service.create_document()` straightforward in Task 3B Checkpoint 3 — the same reusability is being deliberately set up here, for whichever future consumer ends up calling `parse_service` first: synchronous upload processing, a future background worker, a reprocessing endpoint, or a CLI tool).
+**Why `document_texts` is a separate table, not a column on `Document` — the central architectural decision of Checkpoints 2 and 3:** `Document` represents the file's metadata and stored source; `DocumentText` represents derived processing output. Keeping them separate means the existing `select(Document)`-based queries in `document_service.py` (`list_documents_for_user`, `get_document_for_user`, `get_document_file_for_user`) never risk silently loading large extracted text they don't need — SQLAlchemy's default column loading would pull *every* mapped column on `Document` on every one of those calls, so an `extracted_text` column there would have been a real, not hypothetical, performance cost on already-existing, already-live endpoints (`GET /documents` in particular). This was the deciding factor in Checkpoint 2's design review, evaluated against three candidate designs (column-on-Document, separate table, filesystem artifact) in a full comparison matrix.
 
 ### Storage
-**Local disk, fully operational, with persistent Docker storage.** Unchanged this checkpoint. `parse_service.extract_text()` composes naturally with `storage_service.get_file_path()` (the exact `Path` a parser needs), but this composition has **not been implemented** — the two services remain separate and independently callable.
+**Local disk, fully operational, with persistent Docker storage.** Unchanged this checkpoint. `document_texts.content` lives in Postgres, not on disk — a deliberate choice (Checkpoint 2's Option C, a filesystem artifact, was evaluated and rejected specifically because it would reintroduce the two-resource-consistency problem Document Management CRUD Checkpoint 4 already had to solve carefully for binary-file deletion, now for a second resource on every write, not just delete).
 
 ### Deployment (planned, nothing live yet)
 Unchanged this checkpoint.
 
 ### Future microservices
-- **Arq worker**, **GROBID**, **Qdrant**, **Sentry** — all still not integrated. The post-CRUD architectural review explicitly recommended against introducing Arq/Redis at this point (see Section 20) — nothing in the system is yet slow enough synchronously to justify them, and PyMuPDF extraction itself was not observed to be slow during manual verification of small test PDFs.
+Unchanged this checkpoint — see prior sections.
 
 ---
 
@@ -181,28 +187,23 @@ pyjwt>=2.8.0
 email-validator>=2.1.0
 python-multipart>=0.0.9
 pymupdf>=1.24.0
-
-# [dev] extras
-pytest>=8.2.0
-pytest-asyncio>=0.23.0
-httpx>=0.27.0
 ```
-**New dependency this checkpoint: `pymupdf`** (imported as `pymupdf`, not the older `fitz` alias). Verified installed and importable in the active environment — version `1.28.2` was actually installed and used for all testing/manual verification in this checkpoint, comfortably satisfying the `>=1.24.0` floor.
+**No new dependency this checkpoint** — a schema-only checkpoint needs nothing beyond SQLAlchemy and Alembic, both already present.
 
 ### Frontend
 Unchanged. Untouched this checkpoint.
 
 ### Database
-PostgreSQL 16. Two tables: `users`, `documents`. **No schema change this checkpoint.**
+PostgreSQL 16. **Three tables: `users`, `documents`, `document_texts`.** Two migrations before this checkpoint, now three.
 
 ### File storage
-`app/services/storage_service.py` — **unchanged this checkpoint.**
+`app/services/storage_service.py` — unchanged this checkpoint.
 
 ### Parsing
-**New this checkpoint.** `app/services/parse_service.py` — see Section 7 for full detail.
+`app/services/parse_service.py` — unchanged this checkpoint. Still not called from anywhere, including the new `document_texts` table — this checkpoint built the destination, not the pipe connecting source to destination.
 
 ### Environment management
-`pydantic-settings` (`app/core/config.py`). **No new settings this checkpoint** — `parse_service.py` reads no configuration at all (it's a pure function of a file path).
+`pydantic-settings` (`app/core/config.py`). No new settings this checkpoint.
 
 ---
 
@@ -217,13 +218,17 @@ researchpilot/
 ├── docker-compose.yml
 ├── docs/
 │   ├── API.md                          # unchanged this checkpoint — no new endpoint
-│   ├── ARCHITECTURE.md                 # unchanged this checkpoint — layering description still accurate as-is
+│   ├── ARCHITECTURE.md                 # unchanged this checkpoint
 │   └── ROADMAP.md
 ├── backend/
 │   ├── .env.example
 │   ├── Dockerfile
 │   ├── alembic.ini
-│   ├── alembic/                        # unchanged — no new migration
+│   ├── alembic/
+│   │   └── versions/
+│   │       ├── 0618947abd34_create_users_table.py
+│   │       ├── 23fed3dde01d_create_documents_table.py
+│   │       └── f5a18872f21b_create_document_texts_table.py   # NEW this checkpoint
 │   ├── app/
 │   │   ├── main.py                     # unchanged — no new router
 │   │   ├── api/
@@ -233,50 +238,65 @@ researchpilot/
 │   │   ├── core/
 │   │   │   ├── config.py
 │   │   │   ├── security.py
-│   │   │   └── deps.py                 # unchanged — still consumed by 5 routes
+│   │   │   └── deps.py
 │   │   ├── db/
 │   │   │   └── session.py
 │   │   ├── models/
+│   │   │   ├── __init__.py             # MODIFIED — registers DocumentText
 │   │   │   ├── base.py
 │   │   │   ├── user.py
-│   │   │   └── document.py             # unchanged this checkpoint — no extracted_text column
+│   │   │   ├── document.py             # unchanged this checkpoint — no extracted_text column
+│   │   │   └── document_text.py        # NEW this checkpoint
 │   │   ├── schemas/
 │   │   │   ├── auth.py
 │   │   │   └── document.py             # unchanged this checkpoint
 │   │   ├── services/
 │   │   │   ├── auth_service.py
-│   │   │   ├── document_service.py     # unchanged this checkpoint — does not call parse_service
+│   │   │   ├── document_service.py     # unchanged this checkpoint — does not touch DocumentText
 │   │   │   ├── storage_service.py      # unchanged this checkpoint
-│   │   │   └── parse_service.py        # NEW this checkpoint — standalone PDF extraction
-│   │   └── workers/                    # still empty
-│   ├── pyproject.toml                  # modified — added pymupdf
+│   │   │   └── parse_service.py        # unchanged this checkpoint
+│   │   └── workers/
+│   ├── pyproject.toml                  # unchanged this checkpoint — no new dependency
 │   └── tests/
-│       ├── conftest.py                 # unchanged — parse_service tests need none of its fixtures
+│       ├── conftest.py                 # unchanged
 │       ├── test_auth.py                # 12 tests
 │       ├── test_deps.py                # 5 tests
-│       ├── test_document_model.py      # 5 tests
+│       ├── test_document_model.py      # 5 tests — unchanged this checkpoint
+│       ├── test_document_text_model.py # NEW this checkpoint — 6 tests
 │       ├── test_documents_api.py       # 52 tests — unchanged this checkpoint
 │       ├── test_storage_service.py     # 18 tests
-│       └── test_parse_service.py       # NEW this checkpoint — 10 tests
+│       └── test_parse_service.py       # 10 tests
 └── frontend/                           # untouched this checkpoint
 ```
 
 ### Purpose of every major folder
-Unchanged from the prior sync — see prior sections. **This checkpoint modified exactly one existing file** (`backend/pyproject.toml`, one dependency line added) and created exactly two new files (`app/services/parse_service.py`, `tests/test_parse_service.py`). `document_service.py`, `app/api/documents.py`, `app/models/document.py`, `app/schemas/document.py`, and every frontend file were **not touched** — verified directly (`grep -c parse_service` across those four files returned `0` for each) rather than merely asserted.
+Unchanged from the prior sync — see prior sections. **This checkpoint created three files** (`app/models/document_text.py`, `tests/test_document_text_model.py`, the migration) **and modified exactly one existing file** (`app/models/__init__.py`, one line added). `document_service.py`, `app/api/documents.py`, `app/models/document.py`, `app/schemas/document.py`, `storage_service.py`, `parse_service.py`, and every frontend file were **not touched** — verified directly (`grep -c DocumentText`/`document_text` across those files returned `0` for each) rather than merely asserted.
 
 ---
 
 ## 6. DATABASE DESIGN
 
-**Unchanged this checkpoint.** Two tables: `users`, `documents`. No migration, no new column, no schema change of any kind. This was an explicit, repeated instruction for this checkpoint (do not add `extracted_text` to `Document`, do not create a migration) — followed exactly, and confirmed by inspection afterward, not just by not having written one.
+**One new table this checkpoint.** `users` and `documents` unchanged.
 
-**The extracted-text persistence question remains genuinely open.** The checkpoint instructions were explicit that the future schema decision must weigh document size, the current 20MB upload cap, future chunking, and whether extracted text belongs directly on `Document` or in a separate representation — none of that has been decided, and this document does not pre-empt it.
+### `document_texts` — new this checkpoint, migration `f5a18872f21b_create_document_texts_table`
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | UUID | primary key, default `uuid4()` (via `BaseModel`, same pattern as every other table) |
+| `document_id` | UUID | FK → `documents.id`, `ON DELETE CASCADE`, `UNIQUE`, indexed — one unique index satisfies both requirements |
+| `content` | TEXT | not null — must allow `""` (a valid, textless PDF is a legitimate outcome, not a failure; see `parse_service`'s existing three-way contract) |
+| `created_at` / `updated_at` | TIMESTAMPTZ | via `BaseModel`, same DB-generated pattern as every other table |
+
+**No `relationship()`** on either `Document` or `DocumentText` — same reasoning already established for `User`↔`Document` (Section 11 #19): nothing needs ORM navigation yet; a future service queries `select(DocumentText).where(DocumentText.document_id == ...)` explicitly.
+
+**No `status`, `error`, `parser_version`, or versioning column.** Presence/absence of a `document_texts` row for a given `Document` is the only (implicit, minimal) signal available at this stage for "has this been processed" — a real status mechanism is explicit future work, deferred until asynchronous processing actually exists (per the post-CRUD architectural review's finding, restated in Checkpoint 2's design review).
+
+**Verified against the real database, not just the migration file:** `\d document_texts` confirmed every column/constraint/index/FK matches exactly; a real duplicate `document_id` insert was rejected by the actual unique constraint; a real cascade delete (deleting the parent `Document`) was confirmed to remove the `DocumentText` row; a `DocumentText` referencing a nonexistent `Document` was rejected by the real FK constraint (this project's tests run against real Postgres, not SQLite — the FK is genuinely enforced).
 
 ---
 
 ## 7. IMPLEMENTED FEATURES
 
-*(Tasks 1 through Document Management CRUD Checkpoint 4 — see prior syncs for full detail; summarized here, unchanged.)*
+*(Tasks 1 through Document Text Extraction Checkpoint 2 — see prior syncs for full detail; summarized here, unchanged.)*
 
 - **Task 1** — Project skeleton.
 - **Task 2.1** — Database foundation.
@@ -285,43 +305,40 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 - **Task 3A** — `get_current_user` protected-route dependency. 5 tests.
 - **Task 3B Checkpoints 1–4** — Document data layer, storage service, upload API, housekeeping.
 - **Document Management CRUD Checkpoints 1–4** — List, detail, download, delete. **Complete.**
-- **Post-CRUD architectural review** (review-only, no code) — recommended Document Text Extraction as the next milestone; see Section 20.
+- **Post-CRUD architectural review** (review-only, no code) — recommended Document Text Extraction as the next milestone.
+- **Document Text Extraction Checkpoint 1** — Standalone PDF parse service. 10 tests.
+- **Document Text Extraction Checkpoint 2** — Design review (review-only, no code) — approved a separate `document_texts` table over a column on `Document` or a filesystem artifact.
 
-### Document Text Extraction — Checkpoint 1: Standalone PDF parse service (this checkpoint)
-**What it does:** `app/services/parse_service.py` — `extract_text(file_path: Path) -> str`. Given a `.pdf` file's path, returns its text content, page by page, in order.
+### Document Text Extraction — Checkpoint 3: `document_texts` schema (this checkpoint)
+**What it does:** Implements the schema approved in Checkpoint 2. `app/models/document_text.py` (`DocumentText` model) plus the migration that creates the table. Schema only — nothing writes to it yet.
 
-**Key decisions:**
-- **PDF only.** `.docx` and `.txt` — both valid *upload* extensions elsewhere in the app (`settings.allowed_upload_extensions_list`) — are explicitly rejected here with `UnsupportedFormatError`, not silently mishandled or attempted. Extraction for those formats is left as an explicit future decision.
-- **Three-way failure contract, deliberately not collapsed into one:**
-  1. A valid PDF with no extractable text (e.g. scanned image, no text layer) → returns `""`. Not an error.
-  2. A file that's missing, empty, or corrupted/not really a PDF → raises `ParseError`.
-  3. A file with an unsupported extension → raises `UnsupportedFormatError` (distinct from `ParseError`).
-- **`pymupdf.EmptyFileError` is a subclass of `pymupdf.FileDataError`** — verified directly against the installed library (not assumed from documentation), so one `except pymupdf.FileDataError` clause correctly and deliberately covers both the empty-file and corrupted-file cases without over-catching.
-- **No bare `except Exception`.** Only the specific, understood PyMuPDF exception is caught, matching `storage_service.py`'s existing discipline exactly.
-- **`pymupdf.open()` used via its context-manager protocol** (`with pymupdf.open(file_path) as document:`) for reliable handle closing — verified this is actually supported by the installed version (`1.28.2`) before relying on it, rather than assumed from general library familiarity.
-- **Minimal, explicit, documented text normalization:** each page's text is `.strip()`-ed, then pages are joined with `"\n\n"`. Nothing beyond that — no internal whitespace collapsing, no reformatting. Tested explicitly.
-- **No filesystem paths in exception messages** — `ParseError`'s messages are generic ("The file could not be found.", "The file is not a valid PDF or is corrupted.") so this exception is safe to surface without leaking server-side directory structure, matching the checkpoint's explicit security requirement.
-- **Zero DB/HTTP/`document_service` coupling** — confirmed by the tests themselves needing nothing from `conftest.py` (no `client`, no `db_session`), and confirmed post-hoc by grepping the four files that would need to reference `parse_service` for it to be "wired in" (`document_service.py`, `app/api/documents.py`, `app/models/document.py`, `app/schemas/document.py`) and finding zero references in all four.
+**Key decisions (all inherited from the approved Checkpoint 2 design, now made real):**
+- Separate table, not a `Document` column — see Section 3 for the full reasoning.
+- `document_id` is `UNIQUE` — enforces one-Document-to-zero-or-one-DocumentText at the database level, not just assumed by application code.
+- No `relationship()`, no status/error/version columns, no API endpoint — all explicitly deferred.
+- Autogenerate detected **only** the intended table and index — no unrelated schema drift, confirmed by reading the tool's own output before applying anything.
 
-**Files:** `backend/app/services/parse_service.py` (new), `backend/tests/test_parse_service.py` (new), `backend/pyproject.toml` (modified — one dependency line).
+**Files:** `backend/app/models/document_text.py` (new), `backend/app/models/__init__.py` (modified — one import line), `backend/alembic/versions/f5a18872f21b_create_document_texts_table.py` (new), `backend/tests/test_document_text_model.py` (new).
 
-**Tests:** 10 new, all independent of any DB/HTTP fixture — basic valid-PDF extraction, multi-page order preservation, blank-page-returns-empty-string (not an error), corrupted PDF, empty file, nonexistent file, `.docx` rejection, `.txt` rejection, direct callability with just a `Path` (explicit proof of decoupling), and the page-joining normalization behavior. **102 backend tests passing overall (92 pre-existing + 10 new), zero regressions** — the exact count from an actual `pytest` run, reported after actually running it, not estimated in advance (the checkpoint instructions explicitly required this).
+**Tests:** 6 new, mirroring `test_document_model.py`'s existing style exactly — insertion/retrieval, empty content persists successfully, duplicate `document_id` rejected (real `IntegrityError` from the real unique constraint), cascade delete on parent `Document` deletion, FK rejection of a nonexistent `Document` reference, realistic multi-line content preserved unchanged. **108 backend tests passing overall (102 pre-existing + 6 new), zero regressions.**
 
-**Verified beyond pytest:** called `extract_text()` directly (not through the API, since the API is intentionally untouched) against a real generated multi-page PDF (confirmed both pages' text present and in order), a real corrupted file (confirmed `ParseError`), a real `.docx` file (confirmed `UnsupportedFormatError`), and a real nonexistent path (confirmed `ParseError`). **One incidental, honestly-reported observation:** an em-dash inserted via PyMuPDF's own `insert_text()` (used only to *generate* test fixtures, not part of `extract_text()` itself) rendered as a middle-dot due to a default-font glyph-substitution quirk — noted transparently in the CHANGELOG as a test-fixture-generation artifact, not a defect in the extraction logic, since real uploaded PDFs carry their own embedded fonts.
+**Verified beyond pytest:** migration applied/rolled-back/reapplied against the real dev database, confirmed `downgrade -1` removes *only* `document_texts` (checked `\dt` before/after, `users`/`documents` untouched); manually inserted a real row with embedded-newline content and confirmed exact preservation; manually triggered and confirmed the real unique-constraint rejection; manually confirmed empty-string content persists and re-fetches correctly; manually confirmed cascade delete removes the `DocumentText` row when its parent `Document` is deleted. All test/manual data cleaned up afterward, confirmed via direct row counts.
 
-**Not yet done, deliberately:** not called from `document_service.py`, not called from the upload endpoint or any endpoint, no `extracted_text` column, no migration, no `DocumentResponse` change, no DOCX/TXT support, no chunking, no embeddings, no background processing. All explicitly out of scope for this checkpoint per its own instructions, not oversights.
+**Not yet done, deliberately:** nothing writes to `document_texts` — no upload wiring, no parsing orchestration, no chunking, no embeddings, no background processing, no API endpoint, no status tracking, no versioning. All explicitly out of scope per this checkpoint's own instructions, not oversights.
+
+**Process note:** during implementation, a stray `git init` was run by mistake in the sandbox while attempting to check git status (this sandbox has never had a git repository throughout this project's entire history — the real repository lives on the user's own machine). It was caught and reverted immediately; no git operation of any kind was actually performed against anything meaningful, and this checkpoint's instructions to avoid all git operations were otherwise followed exactly.
 
 ---
 
 ## 8. AUTHENTICATION FLOW
 
-**Unchanged this checkpoint.** `get_current_user` still consumed by exactly five routes — no new route was added.
+**Unchanged this checkpoint.**
 
 ---
 
 ## 9. API ENDPOINTS
 
-**Unchanged this checkpoint — no route was added, modified, or removed.** `parse_service.extract_text()` is not exposed via HTTP in any form.
+**Unchanged this checkpoint — no route was added, modified, or removed.** `document_texts` is not exposed via HTTP in any form, per explicit instruction.
 
 | Method | Route | Purpose | Auth required? |
 |---|---|---|---|
@@ -340,25 +357,23 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 
 ## 10. CODING CONVENTIONS
 
-**Unchanged this checkpoint** — see prior sections. `parse_service.py` follows every established convention exactly: plain module-level functions (not a class, since the existing architecture doesn't genuinely require one — the checkpoint instructions explicitly asked for this to be verified before deciding), domain-specific `Exception` subclasses with clear docstrings (matching `storage_service.py`'s `UnsupportedFileTypeError`/`StorageError`/`StoredFileNotFoundError` style precisely), no bare `except Exception`, `Path`-based inputs.
+**Unchanged this checkpoint** — see prior sections. `DocumentText` follows every established convention exactly: inherits `BaseModel` for UUID PK + timestamps (same as `User`/`Document`), plain declarative model (no class-level business logic), FK with explicit `index=True` (matching `Document.user_id`'s pattern rather than relying on Postgres to auto-index FKs, which it doesn't).
 
 ---
 
 ## 11. IMPORTANT DESIGN DECISIONS
 
-*(1–43 unchanged from the prior sync. New decisions below.)*
+*(1–49 unchanged from the prior sync. New decisions below — the outcome of Checkpoint 2's design review, now implemented.)*
 
-44. **`parse_service.py` built as a fully standalone service, not composed into `document_service.py` in this checkpoint.** This was an explicit instruction, and it independently matches the project's established pattern — `storage_service.py` was built the same decoupled way in Task 3B Checkpoint 2, and that decoupling is exactly what let `document_service.create_document()` compose it cleanly in Checkpoint 3 without either module needing rework. The same reusability is being deliberately set up here for whichever future consumer calls `parse_service` first.
+50. **Extracted text lives in a separate `document_texts` table, not a column on `Document`.** The deciding factor: SQLAlchemy's default `select(Document)` loads every mapped column, so a large text column there would impose a real cost on already-existing, already-live queries (`list_documents_for_user`, `get_document_for_user`, `get_document_file_for_user`) that have no need for it. A filesystem artifact (a third option considered) was rejected because it would reintroduce the two-resource-consistency problem Document Management CRUD Checkpoint 4 already solved carefully for binary-file deletion, now for a second resource on every write. Full comparison matrix in the Checkpoint 2 design review.
 
-45. **PDF-only extraction, `.docx`/`.txt` explicitly rejected rather than silently ignored.** Even though both are valid *upload* extensions elsewhere in the app, attempting to parse them with a PDF-only parser and getting garbage (or a confusing low-level error) would be worse than an explicit, documented rejection. DOCX/TXT support is left as a genuinely open future decision, not implied to be "coming next."
+51. **`document_id` is `UNIQUE`, enforcing one-Document-to-zero-or-one-DocumentText.** Real multi-version history, if ever needed, means relaxing this constraint as a deliberate future migration — not designed for speculatively now, per the explicit instruction not to prematurely solve an unestablished requirement.
 
-46. **A valid-but-textless PDF returns an empty string, not an exception.** Deliberately not the same situation as a corrupted file — collapsing them would destroy information a future caller might need (e.g., to flag scanned/image-only PDFs as OCR candidates later, versus flagging a genuinely broken upload for the user to fix).
+52. **No `relationship()` between `Document` and `DocumentText`**, for the identical reason already established for `User`↔`Document` (#19): nothing needs ORM navigation yet, and explicit queries are the correct pattern regardless.
 
-47. **`pymupdf.FileDataError` is the only caught exception**, verified via direct testing to also catch `pymupdf.EmptyFileError` (a subclass) for empty files — one exception type, not two, because the library's own hierarchy already unifies them. No broad `except Exception` anywhere in this module.
+53. **No status/error/parser_version column.** Presence or absence of a `document_texts` row is the only signal available at this stage. A real status mechanism is explicitly deferred until asynchronous processing exists — introducing one now would be exactly the kind of speculative state machine this project has consistently avoided (see also: the `status` column deliberately omitted from `documents` itself, Section 11 #17).
 
-48. **`ParseError` messages never include the filesystem path.** Generic, safe-to-surface messages only — matches the checkpoint's explicit security requirement and the same instinct already applied to `storage_service.StoredFileNotFoundError`'s 500 responses in Task 3B/Document Management CRUD Checkpoint 3.
-
-49. **No `extracted_text` column, no migration, in this checkpoint.** The schema/storage-design question for extracted text is deliberately left open — explicitly not decided here, and not to be assumed by the next checkpoint either without its own review.
+54. **Extracted text is not exposed via any API endpoint.** It's internal processing state feeding a future chunking/RAG pipeline, not user-visible product content in its own right — evaluated explicitly against the project's actual Phase 1 acceptance criteria (chat answers with citations, not raw extracted text as a standalone artifact).
 
 ---
 
@@ -373,13 +388,15 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 - Task 3B Checkpoints 1–4 — Document data layer, storage service, upload API, housekeeping.
 - Document Management CRUD Checkpoints 1–4 — List, detail, download, delete. **Complete.**
 - Post-CRUD architectural review (review-only).
-- **Document Text Extraction Checkpoint 1 — Standalone PDF parse service. Complete.**
+- Document Text Extraction Checkpoint 1 — Standalone PDF parse service.
+- Document Text Extraction Checkpoint 2 — Design review (review-only) — approved.
+- **Document Text Extraction Checkpoint 3 — `document_texts` schema. Complete.**
 
-**Git state:** per the review checkpoint's report, everything through Document Management CRUD Checkpoint 4 was committed and pushed (commit `31b8913`). **This checkpoint's changes are implemented, tested, and verified but explicitly NOT yet committed or pushed** — per this checkpoint's own instructions. One recommended commit message is in this checkpoint's completion report.
+**Git state:** per the prior checkpoint's report, everything through Checkpoint 1 was committed and pushed (commit `415db5f`). **This checkpoint's changes are implemented, tested, and verified but explicitly NOT yet committed or pushed** — per this checkpoint's own instructions. This sandbox has no git repository at all (confirmed); the user reviews and commits on their own machine.
 
 **Not started at all:**
-- Wiring `parse_service` into upload or any endpoint.
-- The extracted-text persistence/schema decision.
+- Wiring `parse_service` output into `document_texts` (the natural next checkpoint).
+- Automatic parsing on upload or any reprocessing trigger.
 - DOCX/TXT extraction.
 - Chunking, embeddings, pgvector usage, similarity search.
 - Background worker, Redis, Arq.
@@ -388,28 +405,22 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None in the sense of half-written features. `parse_service.py` is fully working and tested for its own, deliberately narrow scope — it just isn't connected to anything else yet, which is the checkpoint's intended state, not a gap.
+**Partially completed work:** None in the sense of half-written features. `document_texts` is fully working schema for its own, deliberately narrow scope — it just isn't populated by anything yet, which is this checkpoint's intended end state, not a gap.
 
 ---
 
 ## 13. NEXT TASK
 
-**Document Text Extraction — Checkpoint 2: schema/storage design for extracted text.**
+**Document Text Extraction — Checkpoint 4 (recommended, not yet approved): wire `parse_service.extract_text()`'s output into `document_texts`.**
 
-Per this checkpoint's own explicit instruction, **this document does not assume `extracted_text` will be a column on `Document`.** That decision needs its own review, weighing at minimum:
-- Document size and the existing 20MB upload cap (a `TEXT` column holding a full extracted document's content is a real, non-trivial size consideration).
-- Future chunking — if text is going to be split into chunks immediately after extraction anyway, storing the full raw text on `Document` may be redundant with a future `document_chunks` table, or may still be useful to retain for re-chunking without re-parsing.
-- Whether extracted text belongs directly on `Document`, in a separate one-to-one table, or isn't persisted as raw text at all (e.g., only chunks are persisted, with raw extraction being an ephemeral intermediate step).
+This is a recommendation carried forward from this checkpoint's own final report, not a decision made unilaterally — the user's explicit instruction was "do NOT automatically implement the next checkpoint," so this section states the natural next step without assuming it's approved.
 
-**This is a genuine open question, not a formality** — the next checkpoint should treat it as a real design decision requiring its own trade-off analysis, not just "add a column and move on."
+Likely shape, per the pattern already established across every prior multi-checkpoint milestone in this project: a narrow, single-purpose checkpoint that calls `parse_service.extract_text()` at some call site (most likely composed into `document_service.create_document()`, mirroring exactly how `storage_service` is already composed there — but this should be confirmed, not assumed, since a separate reprocessing endpoint or explicit "process" trigger remain legitimate alternatives) and inserts a `DocumentText` row. Failure handling (what happens to the upload if parsing fails) is a real design question for that checkpoint, not decided here.
 
-**After that decision:** wiring `parse_service` into an actual call site (most likely `document_service.create_document()`, composing it the same way `storage_service` is already composed there — but this too should be confirmed, not assumed, since a separate reprocessing endpoint or explicit "process" trigger are also legitimate alternatives).
-
-**Confirmed decisions from this checkpoint (do not re-litigate without a new reason):**
-- PDF-only extraction for now; DOCX/TXT explicitly deferred.
-- The three-way failure contract (empty-string vs. `ParseError` vs. `UnsupportedFormatError`).
-- No bare `except Exception` — catch only what's understood.
-- `parse_service.py` stays decoupled from FastAPI/DB/`document_service` — composition happens at a higher layer, when a real call site needs it.
+**Confirmed decisions from Checkpoints 2/3 (do not re-litigate without a new reason):**
+- Separate `document_texts` table, not a `Document` column.
+- 1:0..1 via a unique constraint, no versioning.
+- No status column, no relationship(), no API endpoint.
 
 ---
 
@@ -421,7 +432,9 @@ Per this checkpoint's own explicit instruction, **this document does not assume 
   - **Task 3B (Document Management backend, upload-only scope) ✅ done.**
   - **Document Management CRUD ✅ done** (list, detail, download, delete).
   - **Document Text Extraction Checkpoint 1 (standalone parse service) ✅ done** — not yet wired into anything.
-  - Document Text Extraction Checkpoint 2 (schema/storage design) — next, undecided.
+  - **Document Text Extraction Checkpoint 2 (schema/storage design) ✅ done** — separate `document_texts` table approved.
+  - **Document Text Extraction Checkpoint 3 (`document_texts` schema implemented) ✅ done** — table exists, unpopulated.
+  - Document Text Extraction Checkpoint 4 (wire parser output into the table) — recommended next, not yet approved.
   - Chunking, embeddings, pgvector, RAG, chat — not started.
   - Frontend document management (Task 3C) — not started.
   - Deployment (Railway + Vercel) — not started.
@@ -441,28 +454,21 @@ Per this checkpoint's own explicit instruction, **this document does not assume 
 
 ## 15. KNOWN ISSUES
 
-*(1–16 unchanged from the prior sync — CI resolved, `.env.example` resolved, refresh-token gap, username-field gap, `python-multipart` resolved, JWT-in-localStorage, no rate limiting, embedding-dimension assumption, nothing deployed, no `User.documents` relationship, `max_upload_size_mb` resolved, `docs/API.md` gaps resolved, commit-status items resolved, CRUD complete.)*
+*(1–18 unchanged from the prior sync — CI resolved, `.env.example` resolved, refresh-token gap, username-field gap, `python-multipart` resolved, JWT-in-localStorage, no rate limiting, embedding-dimension assumption, nothing deployed, no `User.documents` relationship, `max_upload_size_mb` resolved, `docs/API.md` gaps resolved, commit-status items resolved, CRUD complete, CI/pgvector image mismatch (IMPORTANT, unaddressed), migrations not exercised by test suite (IMPORTANT, unaddressed).)*
 
-17. **CI's Postgres service (`postgres:16`) doesn't match `docker-compose.yml`'s (`pgvector/pgvector:pg16`).** Identified during the post-CRUD architectural review (Section 20), classified IMPORTANT — currently harmless (nothing uses `vector` columns yet), but will silently break CI the moment a future migration adds one. Not addressed in this checkpoint (out of scope — this checkpoint added no migration). Should be fixed before or alongside whichever future checkpoint first introduces pgvector usage.
-
-18. **Migrations aren't exercised by the test suite** (documented since `conftest.py`'s own docstring; restated by the architectural review as IMPORTANT, not urgent). Unaffected by this checkpoint (no migration added).
+19. **This sandbox environment has no git repository at all**, confirmed explicitly this checkpoint (a stray `git init` was run by mistake while checking status, then immediately reverted). Not a project issue — just a standing fact worth restating for the next Claude: `git status`/`diff` cannot be run here; report file-level changes instead, and the user performs all real git operations on their own machine.
 
 ---
 
 ## 16. ENVIRONMENT VARIABLES
 
-**Unchanged this checkpoint.** `parse_service.py` reads no settings at all.
+**Unchanged this checkpoint.**
 
 ---
 
 ## 17. DEPENDENCIES
 
-### Backend — new this checkpoint
-| Package | Why it's here |
-|---|---|
-| `pymupdf` | PDF text extraction (`app/services/parse_service.py`). Imported as `pymupdf` (the modern import name), not the older `fitz` alias. Version `1.28.2` actually installed and exercised in this checkpoint's testing/verification. |
-
-Everything else unchanged — see prior syncs for the full list.
+**Unchanged this checkpoint.** No dependency added or removed.
 
 ---
 
@@ -477,9 +483,9 @@ See Section 12.
 *(Unchanged from prior syncs — see Section 19 history. Restating the ones most relevant to this checkpoint's process:)*
 
 - **Documentation is part of the milestone, not an afterthought.** This checkpoint again did implementation → tests → manual verification → documentation, all before stopping for review.
-- **Do not assume a feature exists, or a library behaves a certain way, merely because it seems likely — verify directly.** This checkpoint's instructions were explicit about this in a new way: PyMuPDF's actual exception hierarchy (`EmptyFileError` as a subclass of `FileDataError`) and its context-manager support were both verified by writing and running small standalone scripts against the real installed library *before* the exception-handling code was written, not assumed from general familiarity with the library.
-- **Report exact numbers, never estimates, for test counts.** Explicitly required by this checkpoint's instructions ("Do NOT guess the test count... the correct final count must come from the actual pytest run") — consistent with, and now reinforcing, this project's pre-existing discipline of never reporting an assumed result.
-- **When a checkpoint's instructions say a design decision belongs to a later checkpoint, do not make it prematurely — including in documentation.** This checkpoint's instructions were unusually explicit that `PROJECT_CONTEXT.md` itself must not "invent future decisions" or "state that extracted_text will definitely be a column on Document." Section 13 above reflects this literally — the open question is described as open, not pre-answered.
+- **Design-first checkpoints (review-only, like Checkpoint 2) and their subsequent implementation checkpoints (like this one) are distinct steps, each requiring its own approval.** Checkpoint 3 did not begin until Checkpoint 2's design was explicitly approved — worth continuing this pattern for any future "decide, then build" pair of checkpoints.
+- **Hand-review every autogenerated migration before applying it, and confirm no unrelated schema drift appeared** — this checkpoint's autogenerate output was read in full before `upgrade head` was ever run, confirming it detected only the intended table and index.
+- **When a sandbox/tool environment lacks something the instructions assume (like a git repository), say so plainly rather than working around it silently** — and if an accidental action is taken (like this checkpoint's stray `git init`), revert it immediately and report it honestly rather than omitting it.
 
 ---
 
@@ -487,18 +493,13 @@ See Section 12.
 
 *(Unchanged sections — origin/philosophy, resume-evolution framing, verification discipline, rejected-ideas list — carry forward from the prior sync. Additions below.)*
 
-**A dedicated post-CRUD architectural review was conducted between Document Management CRUD's completion and this checkpoint** — review-only, no code written, but worth recording its conclusions here since they directly motivated this checkpoint's existence:
-- **No BLOCKER-level technical debt was found.** The architecture was assessed as sound enough to continue building on without any speculative refactor first.
-- **Two IMPORTANT items were identified** (CI/pgvector image mismatch; migrations not exercised by tests) — neither blocks the current checkpoint, both worth addressing before/alongside whichever future checkpoint first needs pgvector.
-- **Five candidate next milestones were evaluated** (document parsing, background infrastructure, embeddings, RAG, frontend document management) and **parsing was recommended** specifically because it's the genuine hard prerequisite for everything downstream in the AI pipeline, while background infrastructure, embeddings, and RAG were all explicitly assessed as hard-blocked on parsing existing first — attempting any of them before parsing would have been exactly the "speculative infrastructure" this project has consistently avoided at every prior checkpoint.
-- **Frontend document management was assessed as an equally legitimate, low-risk alternative** but not chosen, because the project's own stated Phase 1 acceptance criteria (Section 14) are about the chat loop working, not the CRUD surface having a UI — frontend work can happen at any later point without losing value, whereas deferring parsing keeps deferring the actual reason the project exists.
+**Checkpoints 2 and 3 together are a clean example of this project's "design first, implement second, as separately-approved steps" discipline working end-to-end.** Checkpoint 2 produced a full comparison matrix across three real candidate designs (column-on-Document, separate table, filesystem artifact) and was explicitly approved before any code was written; Checkpoint 3 then implemented exactly what was approved, with zero deviation — no scope crept in, no "while I'm in here" additions, no relationship() or status column snuck in despite both being easy to add. Worth pointing to as a template for the next design-then-build pair this project encounters (a likely candidate: chunking strategy, which will face a similar "where does this live and how does it relate to existing tables" question).
 
-**Every completed task/checkpoint has been manually or programmatically verified against real infrastructure, not just written and assumed correct — this checkpoint continued that discipline even for a "pure library" piece of work with no DB/HTTP surface to exercise:** PyMuPDF's actual exception classes and context-manager support were verified with real, throwaway scripts before being relied upon in the real implementation; the exact final test count (102) was obtained from an actual `pytest` run rather than computed as "92 + however many I wrote"; manual verification called the function directly with real generated PDFs, a real corrupted file, and a real `.docx` file, and even an incidental, non-blocking observation (the em-dash/glyph-substitution quirk in the test-fixture-generation helper) was reported honestly rather than smoothed over.
+**Every completed task/checkpoint has been manually or programmatically verified against real infrastructure, not just written and assumed correct — this checkpoint continued that discipline for a schema-only piece of work with a genuinely narrow surface:** the migration was hand-reviewed before being applied (not blindly trusted), then actually applied to a real database, actually rolled back and reapplied, and the resulting table actually inspected with `\d`. The unique constraint, the FK constraint, and the cascade-delete behavior were each triggered for real (not just asserted to work by the code's own docstring) both in the automated test suite and in a separate, independent manual verification pass against the real dev database.
 
 **Rejected ideas worth remembering so they aren't re-proposed as if new** *(addition to the existing list):*
-- **Wiring `parse_service` into `document_service.create_document()` in this same checkpoint** — explicitly out of scope per instructions; not rejected forever, just deliberately sequenced into a later checkpoint after the persistence-design question is resolved.
-- **DOCX/TXT extraction in this checkpoint** — not rejected forever, explicitly deferred; PDF-only was the scoped, deliberate boundary for Checkpoint 1.
-- **A generic `DocumentProcessor` framework, parser registry, or plugin architecture for future format support** — explicitly warned against in the checkpoint instructions and not built; a second format (if/when DOCX is added) should extend `parse_service.py` directly (e.g., a second function or a dispatch on extension) rather than introducing a speculative abstraction layer before there's a second real implementation to generalize from.
-- **Conflating "empty extraction result" with "parse failure"** — considered (it would have been the simpler `str | None` design explicitly warned against in the checkpoint instructions) and rejected in favor of the three-way contract described in Section 11 #46, specifically because collapsing them would destroy information a future caller (e.g., an OCR-fallback decision) would need.
+- **`extracted_text` as a column on `Document`** — rejected in Checkpoint 2's design review, specifically because of the concrete performance cost on already-existing list/detail queries, not a hypothetical concern.
+- **Extracted text as a filesystem artifact (a second file per document)** — rejected because it reintroduces the two-resource-consistency problem already solved for binary-file deletion, now for every write on a second resource.
+- **Adding `relationship()`, a status column, or versioning "since we're already touching the models folder"** — explicitly not done, despite this checkpoint being an obvious, low-friction opportunity to add any of them. The approved design was implemented exactly, nothing more.
 
-**A note on the human collaborator's working style, further confirmed:** this checkpoint's instructions were the most prescriptive yet about *epistemic discipline specifically* — repeated, explicit instructions not to guess test counts, not to assume library behavior, not to pre-decide a future checkpoint's design question even inside documentation. This is a natural extension of a pattern present since Task 2.1 (verify against real infrastructure, don't assume), now made explicit as a standing expectation for library behavior and for documentation content itself, not just for infrastructure state.
+**A note on the human collaborator's working style, further confirmed:** the "design-first, implementation-second, each separately approved" pattern used for this specific architectural decision (where should extracted text live) is now the most detailed example yet of how deliberately this project separates *deciding* something from *building* it — worth defaulting to this two-step pattern for any future decision with comparable weight (i.e., anything that would be genuinely costly to redesign later, as a bad schema choice here would have been once chunking/embeddings depended on it).
