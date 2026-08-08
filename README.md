@@ -10,15 +10,12 @@ Built incrementally, one phase and one task at a time. See
 
 ## Current status
 
-**Phase 1, Task 3B complete (all four checkpoints): authenticated
-document upload works end-to-end, with local storage now persisted
-via a Docker volume in dev.** `POST /api/v1/documents/upload` composes
-the `documents` table, the local-disk storage service, and
-`get_current_user`. **Document listing, detail, download, and delete
-are not implemented** — that scope was explicitly excluded from every
-Task 3B checkpoint and remains unscheduled. See
-`docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
-for the task-by-task history.
+**Phase 1: authenticated document upload and listing both work
+end-to-end.** `POST /api/v1/documents/upload` and `GET
+/api/v1/documents` (paginated, newest first, strictly scoped to the
+authenticated user) are both live. Document detail, download, and
+delete are not implemented yet. See `docs/PROJECT_CONTEXT.md` for
+full current state and `CHANGELOG.md` for the task-by-task history.
 
 ## Stack
 

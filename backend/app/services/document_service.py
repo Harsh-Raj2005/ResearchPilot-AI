@@ -7,13 +7,15 @@ Routers call this; it never touches HTTP directly (no HTTPException
 here — see app/api/documents.py for how storage_service's domain
 exceptions get translated to status codes).
 
-Only one function so far (create_document) — list/get/delete are
-explicitly out of scope for this checkpoint and will be added here
+Two functions: create_document (Checkpoint 3) and
+list_documents_for_user (Document Management CRUD, Checkpoint 1 —
+listing). get/delete are still out of scope and will be added here
 when their own checkpoints arrive, following the same pattern as
 auth_service.py.
 """
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
@@ -53,3 +55,30 @@ async def create_document(
     await db.commit()
     await db.refresh(document)
     return document
+
+
+async def list_documents_for_user(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    skip: int = 0,
+    limit: int = 20,
+) -> list[Document]:
+    """
+    Return this user's documents, newest first, bounded by skip/limit.
+
+    Filters by user_id at the query level — this is the mandatory
+    ownership-isolation requirement, not something the router or
+    caller can accidentally omit. Pagination bounds (skip >= 0,
+    1 <= limit <= 100) are validated at the API boundary (see
+    app/api/documents.py's Query() constraints); this function trusts
+    its caller and applies whatever skip/limit it's given directly.
+    """
+    result = await db.execute(
+        select(Document)
+        .where(Document.user_id == user_id)
+        .order_by(Document.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    return list(result.scalars().all())

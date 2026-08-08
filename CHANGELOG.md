@@ -301,3 +301,42 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   part of this checkpoint's — or the originally-approved Task 3B
   checkpoint plan's — scope; see `docs/PROJECT_CONTEXT.md` for what's
   next.
+
+### Document Management CRUD — Checkpoint 1: List documents
+- Added `GET /api/v1/documents` — authenticated listing of the
+  current user's documents, newest first, bounded pagination
+  (`skip`/`limit` query params, `limit` capped 1–100, default 20).
+- Extended `app/services/document_service.py` with
+  `list_documents_for_user()` rather than creating a parallel
+  listing service — the existing service already owned document
+  persistence; listing is a natural extension of the same boundary.
+  Ownership isolation is enforced at the query level
+  (`WHERE user_id = :current_user`), not left to the router or the
+  caller to remember.
+- No model or schema changes: `Document` already had `created_at`
+  (via `BaseModel`) and `DocumentResponse` already returned it —
+  both reused as-is for ordering and the list response shape.
+- `get_current_user` reused unmodified as the route's auth dependency
+  — no second authentication mechanism introduced.
+- Added 12 new tests to `tests/test_documents_api.py` (reusing its
+  existing `client`/`_auth_headers`/`_isolated_upload_dir` fixtures,
+  no new test infrastructure): auth required, empty list for a new
+  user, own documents returned with correct fields, response doesn't
+  leak `stored_filename`/`storage_path`/`user_id`, cross-user
+  isolation (user B never sees user A's documents), deterministic
+  newest-first ordering (verified with a real time gap between
+  inserts, same technique as Task 2.1's `updated_at` ordering tests),
+  `limit` pagination, `skip` pagination, `limit` upper/lower bound
+  rejection, negative `skip` rejection, default pagination.
+  62/62 backend tests passing overall (50 pre-existing + 12 new),
+  zero regressions.
+- Verified against a real running backend (not just pytest): two
+  real users, two real uploads, listed via real `curl` requests —
+  confirmed newest-first ordering by real timestamps, confirmed user
+  B's empty list, confirmed `401` with no token, confirmed `422` for
+  `limit=0`, confirmed the upload endpoint still works unmodified
+  (regression check), confirmed `GET /api/v1/documents` is registered
+  at exactly that path (no trailing slash, no redirect) via the
+  live OpenAPI schema.
+- Detail, download, and delete endpoints remain unimplemented — this
+  checkpoint is listing only, per its approved scope.

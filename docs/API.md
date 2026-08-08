@@ -80,4 +80,32 @@ Note: the response never includes `stored_filename` or `storage_path` — those 
 **Response `422`** — file extension not in the allowed list (`.pdf`, `.docx`, `.txt`). Nothing is written to disk when this happens.
 **Response `500`** — a filesystem error occurred while saving the file (disk full, permission denied, etc.)
 
-_Validation is extension-based only for Phase 1 — the declared `Content-Type` is trusted as-is and stored for display, not independently verified against file content (`python-magic` content-sniffing is deferred to Phase 12). List, detail, download, and delete endpoints are not implemented yet — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._
+_Validation is extension-based only for Phase 1 — the declared `Content-Type` is trusted as-is and stored for display, not independently verified against file content (`python-magic` content-sniffing is deferred to Phase 12)._
+
+### `GET /documents`
+List the current user's documents, newest first.
+
+**Query parameters**
+| Param | Default | Bounds |
+|---|---|---|
+| `skip` | `0` | `>= 0` |
+| `limit` | `20` | `1`–`100` |
+
+**Response `200`**
+```json
+[
+  {
+    "id": "uuid",
+    "original_filename": "thesis.pdf",
+    "content_type": "application/pdf",
+    "file_size_bytes": 123456,
+    "created_at": "2026-01-01T00:00:00Z"
+  }
+]
+```
+Returns `[]` (not an error) for a user with no documents. Results are always scoped to the authenticated user — there is no way to list another user's documents through this endpoint.
+
+**Response `401`** — missing or invalid token
+**Response `422`** — `skip`/`limit` outside their allowed bounds
+
+_Detail, download, and delete endpoints are not implemented yet — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._

@@ -1,18 +1,20 @@
 """
 Documents router.
 
-Task 3B Checkpoint 3 scope: upload only. List/detail/download/delete
-are later checkpoints (see PROJECT_CONTEXT.md Section 13). This is
-`get_current_user`'s first real consumer — every route here requires
-a valid bearer token.
+Task 3B Checkpoint 3 scope: upload. Document Management CRUD
+Checkpoint 1 scope: authenticated listing. Detail/download/delete are
+still later checkpoints (see PROJECT_CONTEXT.md Section 13). This is
+`get_current_user`'s consumer for both routes — every route here
+requires a valid bearer token.
 
-Deliberately thin: reads the upload, enforces the size cap (the one
-piece of validation that genuinely belongs at this layer — see
-Section 11 #24), delegates everything else to document_service, and
-translates its domain exceptions to HTTP responses. No business logic
-lives here.
+Deliberately thin: routes validate their own query params (pagination
+bounds), enforce the size cap on upload (the one piece of validation
+that genuinely belongs at this layer — see Section 11 #24), and
+delegate everything else to document_service. No business logic and
+no direct DB query lives here — ownership filtering happens in the
+service, not the router.
 """
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -57,3 +59,24 @@ async def upload_document(
         ) from exc
 
     return DocumentResponse.model_validate(document)
+
+
+@router.get("", response_model=list[DocumentResponse])
+async def list_documents(
+    skip: int = Query(0, ge=0, description="Number of documents to skip"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum documents to return"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[DocumentResponse]:
+    """
+    List the authenticated user's documents, newest first.
+
+    Bounded pagination via skip/limit query params — plain, no
+    pagination framework, matching how the rest of this project favors
+    the simplest option that works. limit is capped at 100 so a caller
+    can't request an unreasonably large result set in one call.
+    """
+    documents = await document_service.list_documents_for_user(
+        db, user_id=current_user.id, skip=skip, limit=limit
+    )
+    return [DocumentResponse.model_validate(document) for document in documents]

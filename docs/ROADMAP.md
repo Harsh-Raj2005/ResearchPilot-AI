@@ -23,4 +23,8 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Checkpoint 3 — Document upload API (`get_current_user`'s first real consumer)
   - [x] Checkpoint 4 — Housekeeping (env, .gitignore, docker-compose volume, docs)
 - [ ] Document list/detail/download/delete — not scheduled to a task yet
+  - [x] List — `GET /api/v1/documents`, paginated, own documents only
+  - [ ] Detail — not started
+  - [ ] Download — not started
+  - [ ] Delete — not started
 - [ ] Task 3C — Document management (frontend) — planned at a high level only

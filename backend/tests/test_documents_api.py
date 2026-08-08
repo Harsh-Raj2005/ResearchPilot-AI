@@ -7,6 +7,7 @@ via the httpx client fixture. Redirects settings.upload_dir to a
 tmp_path per test, same pattern as test_storage_service.py, so
 nothing touches the real dev storage/uploads/ folder.
 """
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -188,3 +189,162 @@ async def test_two_users_can_upload_independently(client: AsyncClient):
     assert response_a.status_code == 201
     assert response_b.status_code == 201
     assert response_a.json()["id"] != response_b.json()["id"]
+
+
+# --- GET /documents (Document Management CRUD, Checkpoint 1: listing) ---
+
+
+async def test_list_documents_requires_authentication(client: AsyncClient):
+    response = await client.get("/api/v1/documents")
+    assert response.status_code == 401
+
+
+async def test_list_documents_empty_for_user_with_no_documents(client: AsyncClient):
+    headers = await _auth_headers(client, email="empty@example.com", username="emptyuser")
+    response = await client.get("/api/v1/documents", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_list_documents_returns_own_documents(client: AsyncClient):
+    headers = await _auth_headers(client, email="lister@example.com", username="lister")
+    await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("paper.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+
+    response = await client.get("/api/v1/documents", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["original_filename"] == "paper.pdf"
+    assert body[0]["content_type"] == "application/pdf"
+    assert "id" in body[0]
+    assert "created_at" in body[0]
+
+
+async def test_list_documents_does_not_leak_internal_fields(client: AsyncClient):
+    headers = await _auth_headers(client, email="listleak@example.com", username="listleak")
+    await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("paper.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+
+    response = await client.get("/api/v1/documents", headers=headers)
+    body = response.json()[0]
+    assert "stored_filename" not in body
+    assert "storage_path" not in body
+    assert "user_id" not in body
+
+
+async def test_list_documents_isolates_users(client: AsyncClient):
+    headers_a = await _auth_headers(client, email="isoa@example.com", username="isoa")
+    headers_b = await _auth_headers(client, email="isob@example.com", username="isob")
+
+    await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("a_only.pdf", b"a content", "application/pdf")},
+        headers=headers_a,
+    )
+
+    # User A sees their own document.
+    response_a = await client.get("/api/v1/documents", headers=headers_a)
+    assert response_a.status_code == 200
+    assert len(response_a.json()) == 1
+    assert response_a.json()[0]["original_filename"] == "a_only.pdf"
+
+    # User B, who uploaded nothing, must not see user A's document.
+    response_b = await client.get("/api/v1/documents", headers=headers_b)
+    assert response_b.status_code == 200
+    assert response_b.json() == []
+
+
+async def test_list_documents_ordering_newest_first(client: AsyncClient):
+    headers = await _auth_headers(client, email="order@example.com", username="orderuser")
+
+    await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("first.pdf", b"first", "application/pdf")},
+        headers=headers,
+    )
+    # A real gap between inserts, so created_at is guaranteed to differ —
+    # same reasoning as the updated_at-ordering tests from Task 2.1.
+    await asyncio.sleep(1.1)
+    await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("second.pdf", b"second", "application/pdf")},
+        headers=headers,
+    )
+
+    response = await client.get("/api/v1/documents", headers=headers)
+    body = response.json()
+
+    assert len(body) == 2
+    assert body[0]["original_filename"] == "second.pdf"  # newest first
+    assert body[1]["original_filename"] == "first.pdf"
+
+
+async def test_list_documents_pagination_limit(client: AsyncClient):
+    headers = await _auth_headers(client, email="paglimit@example.com", username="paglimit")
+    for i in range(3):
+        await client.post(
+            "/api/v1/documents/upload",
+            files={"file": (f"doc{i}.pdf", f"content{i}".encode(), "application/pdf")},
+            headers=headers,
+        )
+
+    response = await client.get("/api/v1/documents?limit=2", headers=headers)
+
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+
+
+async def test_list_documents_pagination_skip(client: AsyncClient):
+    headers = await _auth_headers(client, email="pagskip@example.com", username="pagskip")
+    for i in range(3):
+        await client.post(
+            "/api/v1/documents/upload",
+            files={"file": (f"doc{i}.pdf", f"content{i}".encode(), "application/pdf")},
+            headers=headers,
+        )
+
+    all_docs = await client.get("/api/v1/documents?limit=10", headers=headers)
+    skipped = await client.get("/api/v1/documents?skip=1&limit=10", headers=headers)
+
+    assert len(all_docs.json()) == 3
+    assert len(skipped.json()) == 2
+    # skip=1 must skip exactly the newest (first) item from the unskipped list.
+    assert skipped.json()[0]["id"] == all_docs.json()[1]["id"]
+
+
+async def test_list_documents_rejects_limit_too_high(client: AsyncClient):
+    headers = await _auth_headers(client, email="pagbound1@example.com", username="pagbound1")
+    response = await client.get("/api/v1/documents?limit=101", headers=headers)
+    assert response.status_code == 422
+
+
+async def test_list_documents_rejects_limit_too_low(client: AsyncClient):
+    headers = await _auth_headers(client, email="pagbound2@example.com", username="pagbound2")
+    response = await client.get("/api/v1/documents?limit=0", headers=headers)
+    assert response.status_code == 422
+
+
+async def test_list_documents_rejects_negative_skip(client: AsyncClient):
+    headers = await _auth_headers(client, email="pagbound3@example.com", username="pagbound3")
+    response = await client.get("/api/v1/documents?skip=-1", headers=headers)
+    assert response.status_code == 422
+
+
+async def test_list_documents_default_pagination(client: AsyncClient):
+    headers = await _auth_headers(client, email="pagdefault@example.com", username="pagdefault")
+    await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("only.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+    response = await client.get("/api/v1/documents", headers=headers)
+    assert response.status_code == 200
+    assert len(response.json()) == 1
