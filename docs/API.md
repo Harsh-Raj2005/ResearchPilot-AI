@@ -143,4 +143,16 @@ Return the actual stored file for a document owned by the current user.
 **Response `422`** — `document_id` is not a valid UUID
 **Response `500`** — the document row exists and is owned by the caller, but its file is missing from disk (e.g. manually deleted, volume reset). The response never includes the server-side filesystem path.
 
-_Delete is not implemented yet — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._
+### `DELETE /documents/{document_id}`
+Delete a document owned by the current user — removes both the stored file and the database record.
+
+**Path parameter:** `document_id` (UUID)
+
+**Response `204`** — no body. The file is deleted first, then the database record; see `docs/PROJECT_CONTEXT.md` for the full data-integrity reasoning behind this ordering. Deleting a document whose underlying file was already missing (e.g. manually removed) still succeeds and removes the stale database record — `storage_service.delete_file()` treats an already-missing file as success, not an error.
+
+**Response `401`** — missing or invalid token
+**Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical behavior to detail/download. **A second `DELETE` of an already-deleted document also returns `404`** (not another `204`) — once deleted, the document genuinely no longer exists for this user.
+**Response `422`** — `document_id` is not a valid UUID
+**Response `500`** — the file exists but could not be deleted for a genuine filesystem reason (not "already missing" — see above). The database record is deliberately left untouched in this case.
+
+_This completes the full Document Management CRUD surface (upload, list, detail, download, delete). Document parsing, embeddings, RAG, and chat are not implemented — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._

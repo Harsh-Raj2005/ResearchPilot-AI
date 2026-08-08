@@ -26,5 +26,6 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] List — `GET /api/v1/documents`, paginated, own documents only
   - [x] Detail — `GET /api/v1/documents/{document_id}`, 404 for not-owned/nonexistent (indistinguishable)
   - [x] Download — `GET /api/v1/documents/{document_id}/file`, same ownership isolation, streamed via FastAPI FileResponse
-  - [ ] Delete — not started
+  - [x] Delete — `DELETE /api/v1/documents/{document_id}`, file deleted before DB row (see PROJECT_CONTEXT.md for ordering rationale)
+- [x] Document Management CRUD — **complete** (upload, list, detail, download, delete)
 - [ ] Task 3C — Document management (frontend) — planned at a high level only

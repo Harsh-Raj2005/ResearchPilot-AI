@@ -3,17 +3,17 @@ Documents router.
 
 Task 3B Checkpoint 3 scope: upload. Document Management CRUD
 Checkpoint 1: authenticated listing. Checkpoint 2: authenticated
-detail. Checkpoint 3 (this checkpoint): authenticated download.
-Delete is still a later checkpoint (see PROJECT_CONTEXT.md Section
-13). This is `get_current_user`'s consumer for all four routes —
-every route here requires a valid bearer token.
+detail. Checkpoint 3: authenticated download. Checkpoint 4 (this
+checkpoint): authenticated delete — completes the full CRUD surface.
+This is `get_current_user`'s consumer for all five routes — every
+route here requires a valid bearer token.
 
 Deliberately thin: routes validate their own path/query params
 (document_id's type, pagination bounds), enforce the size cap on
 upload (the one piece of validation that genuinely belongs at this
 layer — see Section 11 #24), and delegate everything else to
-document_service. No business logic and no direct DB query lives
-here — ownership filtering happens in the service, not the router.
+document_service. No business logic and no direct DB query or
+filesystem access lives here.
 """
 import uuid
 
@@ -154,3 +154,47 @@ async def download_document(
         media_type=document.content_type,
         filename=document.original_filename,
     )
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    document_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Delete a document (stored file + database row) owned by the
+    authenticated user.
+
+    204 No Content on success — no existing project convention uses a
+    custom JSON success body for an action endpoint, and 204 is the
+    conventional REST response for a delete with nothing further to
+    return. Same indistinguishable-404 behavior as detail/download for
+    "doesn't exist" vs. "belongs to someone else" — both flow through
+    the same get_document_for_user() check inside
+    document_service.delete_document_for_user(). A genuine filesystem
+    failure while deleting the file (StorageError — distinct from
+    "already missing", which delete_file() treats as success) is a
+    500, and deliberately leaves the Document row untouched rather
+    than deleting it — see document_service.delete_document_for_user's
+    docstring for the full data-integrity reasoning.
+
+    Note: a second DELETE of the same document_id returns 404, not
+    another 204 — once deleted, the document genuinely no longer
+    exists for this user, so "not found" is the accurate response,
+    not a false "deleted again" success.
+    """
+    try:
+        deleted = await document_service.delete_document_for_user(
+            db, document_id=document_id, user_id=current_user.id
+        )
+    except storage_service.StorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not delete the stored file for this document.",
+        ) from exc
+
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )

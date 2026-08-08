@@ -429,3 +429,71 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   paths with no conflicts.
 - Delete remains unimplemented — this checkpoint is download only,
   per its approved scope.
+
+### Document Management CRUD — Checkpoint 4: Document delete
+**This completes the full Document Management CRUD surface: upload, list, detail, download, delete.**
+- Added `DELETE /api/v1/documents/{document_id}` — authenticated,
+  ownership-enforced deletion of both the stored file and the
+  database record. `204 No Content` on success (no existing project
+  convention uses a custom JSON success body for an action endpoint).
+- Extended `app/services/document_service.py` with
+  `delete_document_for_user()`, the fifth function — reuses
+  `get_document_for_user()` for the existence+ownership check (no
+  duplicated query), reuses `storage_service.delete_file()` as-is (no
+  new filesystem helper).
+- **Data-integrity decision — deletion ordering (the central design
+  question for this checkpoint):** the file is deleted **before** the
+  database row, not after. A Postgres row and a disk file cannot be
+  removed in one atomic transaction, so one order or the other has to
+  be chosen deliberately:
+  - **File-first (chosen):** if the file delete succeeds but the DB
+    delete/commit then fails, the result is a DB row referencing a
+    now-missing file. This is *not a new failure mode* — it's exactly
+    what `get_document_file_for_user()` (Checkpoint 3) already handles
+    cleanly via a distinct `500`, not a crash. The row stays visible
+    and deletable, and retrying `DELETE` succeeds, since
+    `delete_file()` is already idempotent (a missing file is treated
+    as success).
+  - **DB-first (rejected):** if the DB commit succeeds but the
+    subsequent file delete fails, the file is orphaned on disk with
+    **no DB row left to ever reference it again** — a silent,
+    permanent storage leak with no retry path.
+  - File-first is strictly safer given `delete_file()`'s existing
+    idempotency guarantee, and required no new policy — it directly
+    reuses that guarantee rather than inventing one.
+- If `delete_file()` raises `StorageError` (a genuine filesystem
+  failure, distinct from "already missing"), that exception
+  propagates as a `500` and the Document row is deliberately **left
+  untouched** — "row still there, file still there" is a safe,
+  inspectable state; "row gone, file orphaned" is not.
+- **A second `DELETE` of an already-deleted document returns `404`,
+  not another `204`** — once deleted, the document genuinely no
+  longer exists for this user, so "not found" is the accurate
+  response. This was a deliberate choice, not an oversight — some
+  REST APIs return idempotent `204`s on repeat delete, but nothing in
+  this project's existing conventions requires that, and returning an
+  accurate "not found" was judged the more honest response.
+- Added 13 new tests to `tests/test_documents_api.py`: owner delete
+  success (204, empty body), deleted document 404s on detail, deleted
+  document disappears from list, physical file actually removed from
+  disk, unauthenticated rejected, nonexistent 404, cross-user
+  rejected (and confirmed the document was **not** actually deleted),
+  wrong-owner/nonexistent responses byte-identical, malformed UUID
+  422, deleting a document whose file was already manually removed
+  still deletes the stale row (per `delete_file()`'s existing
+  idempotency), deleting one user's document doesn't affect another
+  user's documents, repeated delete returns 404 not 204, and an
+  explicit upload+list+detail+download regression check. 92/92
+  backend tests passing overall (79 pre-existing + 13 new), zero
+  regressions.
+- Verified against a real running backend: real upload, real delete
+  (204), confirmed the physical file actually gone from disk,
+  confirmed the DB row gone via a real `404` on detail, confirmed
+  gone from list; real cross-user delete attempt rejected with `404`
+  and confirmed the document was genuinely untouched afterward; real
+  `401` unauthenticated, real `422` malformed UUID; real missing-file
+  delete (manually removed the on-disk file, then deleted via the API)
+  confirmed still returns `204` and removes the stale row; confirmed
+  via the live OpenAPI schema that `GET` and `DELETE` are both
+  correctly registered under `/documents/{document_id}` with no
+  conflicts.

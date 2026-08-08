@@ -591,3 +591,222 @@ async def test_upload_list_detail_still_work_after_download_endpoint_added(clien
     detail_response = await client.get(f"/api/v1/documents/{document_id}", headers=headers)
     assert detail_response.status_code == 200
     assert detail_response.json()["id"] == document_id
+
+
+# --- DELETE /documents/{document_id} (Document Management CRUD, Checkpoint 4: delete) ---
+
+
+async def test_delete_document_owner_success(client: AsyncClient):
+    headers = await _auth_headers(client, email="deleteowner@example.com", username="deleteowner")
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("todelete.pdf", b"delete me", "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    response = await client.delete(f"/api/v1/documents/{document_id}", headers=headers)
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+
+async def test_delete_document_removes_it_from_detail(client: AsyncClient):
+    headers = await _auth_headers(client, email="deletedetail@example.com", username="deletedetail")
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("gone.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    await client.delete(f"/api/v1/documents/{document_id}", headers=headers)
+    detail_response = await client.get(f"/api/v1/documents/{document_id}", headers=headers)
+
+    assert detail_response.status_code == 404
+
+
+async def test_delete_document_removes_it_from_list(client: AsyncClient):
+    headers = await _auth_headers(client, email="deletelist@example.com", username="deletelist")
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("removeme.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    await client.delete(f"/api/v1/documents/{document_id}", headers=headers)
+    list_response = await client.get("/api/v1/documents", headers=headers)
+
+    assert list_response.status_code == 200
+    assert list_response.json() == []
+
+
+async def test_delete_document_removes_physical_file(client: AsyncClient):
+    headers = await _auth_headers(client, email="deletefile@example.com", username="deletefile")
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("physical.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    upload_dir = Path(settings.upload_dir)
+    stored_files_before = list(upload_dir.glob("*.pdf"))
+    assert len(stored_files_before) == 1
+
+    await client.delete(f"/api/v1/documents/{document_id}", headers=headers)
+
+    stored_files_after = list(upload_dir.glob("*.pdf"))
+    assert len(stored_files_after) == 0
+
+
+async def test_delete_document_requires_authentication(client: AsyncClient):
+    response = await client.delete(f"/api/v1/documents/{uuid.uuid4()}")
+    assert response.status_code == 401
+
+
+async def test_delete_document_nonexistent_returns_404(client: AsyncClient):
+    headers = await _auth_headers(client, email="deletemissing@example.com", username="deletemissing")
+    response = await client.delete(f"/api/v1/documents/{uuid.uuid4()}", headers=headers)
+    assert response.status_code == 404
+
+
+async def test_delete_document_cannot_delete_another_users_document(client: AsyncClient):
+    headers_a = await _auth_headers(client, email="deletea@example.com", username="deletea")
+    headers_b = await _auth_headers(client, email="deleteb@example.com", username="deleteb")
+
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("a_protected.pdf", b"protected", "application/pdf")},
+        headers=headers_a,
+    )
+    document_id = upload.json()["id"]
+
+    response = await client.delete(f"/api/v1/documents/{document_id}", headers=headers_b)
+    assert response.status_code == 404
+
+    # Confirm it wasn't actually deleted — user A can still see it.
+    still_there = await client.get(f"/api/v1/documents/{document_id}", headers=headers_a)
+    assert still_there.status_code == 200
+
+
+async def test_delete_document_wrong_owner_indistinguishable_from_nonexistent(client: AsyncClient):
+    headers_a = await _auth_headers(client, email="deleteindista@example.com", username="deleteindista")
+    headers_b = await _auth_headers(client, email="deleteindistb@example.com", username="deleteindistb")
+
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("owned.pdf", b"owned", "application/pdf")},
+        headers=headers_a,
+    )
+    owned_id = upload.json()["id"]
+
+    wrong_owner_response = await client.delete(f"/api/v1/documents/{owned_id}", headers=headers_b)
+    nonexistent_response = await client.delete(f"/api/v1/documents/{uuid.uuid4()}", headers=headers_b)
+
+    assert wrong_owner_response.status_code == nonexistent_response.status_code == 404
+    assert wrong_owner_response.json() == nonexistent_response.json()
+
+
+async def test_delete_document_invalid_id_format_rejected(client: AsyncClient):
+    headers = await _auth_headers(client, email="deletebadid@example.com", username="deletebadid")
+    response = await client.delete("/api/v1/documents/not-a-uuid", headers=headers)
+    assert response.status_code == 422
+
+
+async def test_delete_document_with_already_missing_file_still_deletes_row(client: AsyncClient):
+    """
+    storage_service.delete_file() is already idempotent — deleting a
+    document whose underlying file was already removed (e.g. manual
+    deletion, volume reset) must still succeed in removing the stale
+    DB row, per that existing semantics.
+    """
+    headers = await _auth_headers(client, email="deletemissingfile@example.com", username="deletemissingfile")
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("willbegone.pdf", b"soon gone", "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    upload_dir = Path(settings.upload_dir)
+    stored_files = list(upload_dir.glob("*.pdf"))
+    assert len(stored_files) == 1
+    stored_files[0].unlink()  # simulate the file already being gone
+
+    response = await client.delete(f"/api/v1/documents/{document_id}", headers=headers)
+    assert response.status_code == 204
+
+    detail_response = await client.get(f"/api/v1/documents/{document_id}", headers=headers)
+    assert detail_response.status_code == 404
+
+
+async def test_delete_document_does_not_affect_other_users_documents(client: AsyncClient):
+    headers_a = await _auth_headers(client, email="deleteisoa@example.com", username="deleteisoa")
+    headers_b = await _auth_headers(client, email="deleteisob@example.com", username="deleteisob")
+
+    upload_a = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("a_doc.pdf", b"a content", "application/pdf")},
+        headers=headers_a,
+    )
+    upload_b = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("b_doc.pdf", b"b content", "application/pdf")},
+        headers=headers_b,
+    )
+    document_id_a = upload_a.json()["id"]
+    document_id_b = upload_b.json()["id"]
+
+    await client.delete(f"/api/v1/documents/{document_id_a}", headers=headers_a)
+
+    # User B's document must be completely unaffected.
+    response_b = await client.get(f"/api/v1/documents/{document_id_b}", headers=headers_b)
+    assert response_b.status_code == 200
+    assert response_b.json()["id"] == document_id_b
+
+
+async def test_delete_document_repeated_delete_returns_404_not_204(client: AsyncClient):
+    """
+    A second DELETE of an already-deleted document is a 404, not
+    another 204 — the document genuinely no longer exists, so "not
+    found" is the accurate response rather than a false success.
+    """
+    headers = await _auth_headers(client, email="deleterepeat@example.com", username="deleterepeat")
+    upload = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("onceonly.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+    document_id = upload.json()["id"]
+
+    first_delete = await client.delete(f"/api/v1/documents/{document_id}", headers=headers)
+    second_delete = await client.delete(f"/api/v1/documents/{document_id}", headers=headers)
+
+    assert first_delete.status_code == 204
+    assert second_delete.status_code == 404
+
+
+async def test_upload_list_detail_download_still_work_after_delete_endpoint_added(client: AsyncClient):
+    """Regression check: adding DELETE must not change upload/list/detail/download."""
+    headers = await _auth_headers(client, email="deleteregression@example.com", username="deleteregression")
+
+    upload_response = await client.post(
+        "/api/v1/documents/upload",
+        files={"file": ("stillworks.pdf", b"content", "application/pdf")},
+        headers=headers,
+    )
+    assert upload_response.status_code == 201
+    document_id = upload_response.json()["id"]
+
+    list_response = await client.get("/api/v1/documents", headers=headers)
+    assert list_response.status_code == 200
+    assert len(list_response.json()) == 1
+
+    detail_response = await client.get(f"/api/v1/documents/{document_id}", headers=headers)
+    assert detail_response.status_code == 200
+
+    download_response = await client.get(f"/api/v1/documents/{document_id}/file", headers=headers)
+    assert download_response.status_code == 200
+    assert download_response.content == b"content"

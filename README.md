@@ -10,16 +10,16 @@ Built incrementally, one phase and one task at a time. See
 
 ## Current status
 
-**Phase 1: authenticated document upload, listing, detail, and
-download all work end-to-end.** `POST /api/v1/documents/upload`, `GET
-/api/v1/documents` (paginated, own documents only), `GET
-/api/v1/documents/{document_id}` (single-document metadata, 404 for
-anything not owned by the caller), and `GET
-/api/v1/documents/{document_id}/file` (the actual stored file,
-correct content type and original filename, same indistinguishable
-404 behavior) are all live. Document delete is not implemented yet.
-See `docs/PROJECT_CONTEXT.md` for full current state and
-`CHANGELOG.md` for the task-by-task history.
+**Phase 1: Document Management CRUD is complete.** Authenticated
+document upload, listing, detail, download, and delete all work
+end-to-end — `POST /api/v1/documents/upload`, `GET
+/api/v1/documents`, `GET /api/v1/documents/{document_id}`, `GET
+/api/v1/documents/{document_id}/file`, and `DELETE
+/api/v1/documents/{document_id}` are all live, with consistent
+ownership isolation and indistinguishable 404s throughout. Document
+parsing, embeddings, RAG, and chat are not implemented yet. See
+`docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
+for the task-by-task history.
 
 ## Stack
 

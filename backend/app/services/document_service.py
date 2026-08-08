@@ -7,12 +7,12 @@ Routers call this; it never touches HTTP directly (no HTTPException
 here — see app/api/documents.py for how storage_service's domain
 exceptions get translated to status codes).
 
-Four functions: create_document (Task 3B Checkpoint 3),
+Five functions: create_document (Task 3B Checkpoint 3),
 list_documents_for_user (Document Management CRUD Checkpoint 1 —
-listing), get_document_for_user (Checkpoint 2 — detail), and
-get_document_file_for_user (Checkpoint 3 — download, this checkpoint).
-delete is still out of scope and will be added here when its own
-checkpoint arrives, following the same pattern as auth_service.py.
+listing), get_document_for_user (Checkpoint 2 — detail),
+get_document_file_for_user (Checkpoint 3 — download), and
+delete_document_for_user (Checkpoint 4 — delete, this checkpoint).
+This completes the full CRUD surface planned for Document Management.
 """
 import uuid
 from pathlib import Path
@@ -138,3 +138,59 @@ async def get_document_file_for_user(
         return None
     file_path = storage_service.get_file_path(document.storage_path)
     return document, file_path
+
+
+async def delete_document_for_user(
+    db: AsyncSession,
+    *,
+    document_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> bool:
+    """
+    Delete the stored file and the Document row for a document owned
+    by user_id.
+
+    Returns True if a matching document was found and deleted, False
+    if none exists for this user — the router turns False into the
+    same 404 used by detail/download, so a wrong-owner request and a
+    nonexistent-id request remain indistinguishable here too. Reuses
+    get_document_for_user() rather than a second ownership query.
+
+    Deletion order — the central data-integrity decision for this
+    checkpoint, since a Postgres row and a disk file can't be removed
+    in one atomic transaction:
+
+    1. The file is deleted FIRST, via storage_service.delete_file(),
+       which is already idempotent (a missing file is treated as
+       success, not an error — see storage_service.py).
+    2. Only once that succeeds (or was already a no-op) is the
+       Document row deleted and the transaction committed.
+
+    Why this order, not the reverse: if step 1 succeeds but step 2
+    fails before commit, the result is a DB row referencing a
+    now-missing file. That is not a new failure mode — it's exactly
+    what get_document_file_for_user() (Checkpoint 3) already handles
+    cleanly (a distinct 500 via StoredFileNotFoundError, not a crash).
+    The row stays visible and deletable, and retrying DELETE succeeds,
+    since delete_file() is a no-op the second time. If the order were
+    reversed — row deleted and committed first, file deletion attempted
+    second — a failure in that second step orphans the file on disk
+    with no DB row ever able to reference it again: a silent,
+    permanent storage leak with no retry path. File-first is strictly
+    safer given delete_file()'s existing idempotency guarantee.
+
+    If delete_file() raises StorageError (a genuine filesystem failure,
+    distinct from "already missing"), that exception propagates and
+    the Document row is deliberately left untouched — "row still
+    there, file still there" is a safe, inspectable state; "row gone,
+    file orphaned" is not.
+    """
+    document = await get_document_for_user(db, document_id=document_id, user_id=user_id)
+    if document is None:
+        return False
+
+    storage_service.delete_file(document.storage_path)
+
+    await db.delete(document)
+    await db.commit()
+    return True
