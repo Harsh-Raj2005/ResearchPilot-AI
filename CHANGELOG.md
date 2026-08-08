@@ -222,3 +222,47 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - Scope strictly limited to storage per this checkpoint — no DB
   interaction (no `document_service.py` yet), no upload endpoint, no
   API route, no frontend change.
+
+### Task 3B — Checkpoint 3: Document upload API
+- Added `app/api/documents.py`: `POST /documents/upload` —
+  `get_current_user`'s first real route consumer. Reads the upload,
+  enforces the size cap, delegates to `document_service`, translates
+  its domain exceptions to HTTP responses.
+- Added `app/services/document_service.py`: `create_document()` — the
+  first place `storage_service` (Checkpoint 2) and `Document`
+  (Checkpoint 1) are composed together.
+- Added `app/schemas/document.py`: `DocumentResponse` — deliberately
+  excludes `stored_filename`/`storage_path` (internal storage
+  details), mirroring `UserPublic` never exposing `hashed_password`.
+- Added `max_upload_size_mb` to `app/core/config.py` (default 20),
+  enforced in the router before `document_service`/`storage_service`
+  is ever called — fulfills the deferral documented back in
+  Checkpoint 2 (size enforcement belongs at the endpoint layer, not
+  the storage layer). A rejected oversized upload leaves zero
+  filesystem footprint, same principle as a rejected extension.
+- Added `python-multipart` dependency — required by FastAPI's
+  `UploadFile`/multipart form parsing; the app would fail at request
+  time without it.
+- Status code conventions established for document endpoints: `422`
+  for disallowed extension, `413` for oversized file, `500` for
+  genuine storage failures.
+- `content_type` is trusted from the client's declared value, not
+  independently verified — consistent with the already-documented
+  decision to skip `python-magic` content-sniffing for Phase 1.
+- Added `tests/test_documents_api.py` — 10 HTTP-level tests: auth
+  required, invalid token rejected, PDF/DOCX/TXT upload success,
+  response doesn't leak internal fields, file actually written to
+  disk, disallowed extension rejected, oversized file rejected (zero
+  footprint), two users upload independently with distinct IDs.
+  50/50 backend tests passing overall (40 pre-existing + 10 new),
+  zero regressions.
+- Verified against a real running backend + real Postgres (not just
+  pytest): real signup/login, real multipart upload via curl, real
+  file confirmed on disk, real `documents` row confirmed via direct
+  `psql` query with all fields correctly populated, 401 without a
+  token, 422 for a disallowed extension, mismatched declared
+  Content-Type vs. extension confirmed to be accepted (extension
+  governs, as designed).
+- No listing/detail/download/delete endpoints — upload only, per this
+  checkpoint's scope. Code committed but not yet pushed as of this
+  documentation sync.

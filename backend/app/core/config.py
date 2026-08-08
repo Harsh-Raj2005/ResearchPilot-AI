@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     # Phase 1 (python-magic content-sniffing deliberately deferred to
     # Phase 12 — see PROJECT_CONTEXT.md Section 11 #18).
     allowed_upload_extensions: str = ".pdf,.docx,.txt"
+    # Enforced at the endpoint layer (here), not in storage_service —
+    # deliberately deferred from Checkpoint 2 (see PROJECT_CONTEXT.md
+    # Section 11 #24): the storage service persists whatever bytes
+    # it's given, deciding whether a request should be allowed at all
+    # belongs to the layer that first reads it.
+    max_upload_size_mb: int = 20
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -59,6 +65,10 @@ class Settings(BaseSettings):
             for ext in self.allowed_upload_extensions.split(",")
             if ext.strip()
         ]
+
+    @property
+    def max_upload_size_bytes(self) -> int:
+        return self.max_upload_size_mb * 1024 * 1024
 
 
 @lru_cache

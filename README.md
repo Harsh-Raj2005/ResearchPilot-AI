@@ -10,14 +10,13 @@ Built incrementally, one phase and one task at a time. See
 
 ## Current status
 
-**Phase 1, Task 3B Checkpoint 2 complete.** The `documents` table and
-`Document` model (Checkpoint 1) and the local-disk storage service
-(Checkpoint 2 — save/delete, UUID filenames, extension validation)
-both exist and are fully tested, but nothing HTTP-facing uses them
-yet — there is no upload endpoint. Authentication (backend +
-frontend) and the `get_current_user` dependency (Task 3A) are done.
-See `docs/PROJECT_CONTEXT.md` for full current state and
-`CHANGELOG.md` for the task-by-task history.
+**Phase 1, Task 3B Checkpoint 3 complete: authenticated document
+upload works end-to-end.** `POST /api/v1/documents/upload` composes
+the `documents` table (Checkpoint 1), the local-disk storage service
+(Checkpoint 2), and `get_current_user` (Task 3A) — its first real
+route consumer. Document listing, detail, download, and delete are
+not implemented yet. See `docs/PROJECT_CONTEXT.md` for full current
+state and `CHANGELOG.md` for the task-by-task history.
 
 ## Stack
 
