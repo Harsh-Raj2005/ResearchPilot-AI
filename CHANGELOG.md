@@ -610,3 +610,71 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   no parsing orchestration, no chunking, no embeddings, no status
   tracking, no versioning, no background processing, no API endpoint
   for extracted text.
+
+### Document Text Extraction — Checkpoint 4: Parse -> persist integration
+- Added `app/services/document_text_service.py` —
+  `parse_and_store_document_text(db, *, document)`, the first place
+  `parse_service` (Checkpoint 1) and `document_texts` (Checkpoint 3)
+  are actually connected. A new dedicated service file, not a 6th
+  function on `document_service.py` — mirrors the same
+  Document/DocumentText separation already made at the DB layer
+  (Checkpoint 2) one layer up: `document_service` owns Document
+  metadata operations; `document_text_service` owns the derived-text
+  parse-and-persist operation, composing `storage_service` and
+  `parse_service` the same way `document_service` already composes
+  `storage_service`.
+- **Accepts an already-authorized `Document` object, not a
+  `document_id`.** No ownership check is performed or duplicated here
+  — the caller (a future upload-wiring or reprocess endpoint, neither
+  of which exists yet) is responsible for having obtained the
+  `Document` through the existing authorized path
+  (`document_service.get_document_for_user` or the object
+  `create_document` already returns).
+- **Upsert, not insert-only:** a document with no existing
+  `DocumentText` gets one inserted; a document with one already gets
+  its `content` updated in place — never a duplicate row (the
+  `UNIQUE` constraint on `document_id` guarantees this can't silently
+  happen). `created_at` naturally preserves the first-parsed time;
+  `updated_at`'s existing auto-refresh naturally captures the
+  last-reparsed time — no new column needed for that signal.
+  Deliberately not versioned, matching the approved Checkpoint 2/3
+  design.
+- **Parsing happens strictly before any `document_texts` read or
+  write.** A parse failure (`ParseError`, `UnsupportedFormatError`,
+  or `storage_service.StoredFileNotFoundError`) propagates unmodified
+  and the table is never touched — a consequence of call ordering,
+  not a try/except/rollback.
+- **Empty extracted text (`""`) is persisted as a normal, successful
+  result**, with no special-casing anywhere in the function.
+- **Commits internally**, matching the transaction convention already
+  established by every mutating `document_service` function.
+- **Not wired into upload or any endpoint.** No new API route, no
+  `DocumentResponse` change, no `Document` schema change, no new
+  migration (`alembic check` confirmed "No new upgrade operations
+  detected" after implementation).
+- Added `tests/test_document_text_service.py` — 8 new tests: single-
+  page parse+persist, multi-page order preservation, blank-PDF
+  persists `""`, corrupted PDF raises `ParseError` with zero
+  persistence, missing file raises `StoredFileNotFoundError` with
+  zero persistence, `.docx` raises `UnsupportedFormatError` with zero
+  persistence, reprocessing updates the existing row (same id,
+  `created_at` preserved, `updated_at` advanced, still exactly one
+  row), and a **real** (not simulated) persistence-failure test — the
+  parent `Document` is deleted out from under an already-fetched
+  reference before the write, so the `DocumentText` insert
+  legitimately violates the real FK constraint, raising
+  `IntegrityError`. Test setup uses `document_service.create_document()`
+  itself (real file on disk, real `storage_path`) rather than
+  hand-constructing `Document` rows, so `document.storage_path` is
+  exactly what a real upload would have produced. **116 backend tests
+  passing overall (108 pre-existing + 8 new), zero regressions.**
+- Verified against the real dev database and real files (not just
+  the test DB): a real successful parse+persist, a real empty-PDF
+  persist (confirmed the row exists with `content == ""`), and a real
+  corrupted-PDF failure (confirmed `ParseError` raised and confirmed
+  via direct query that no `DocumentText` row was created). All test
+  data cleaned up afterward, confirmed via row counts returning `0`
+  on all three tables.
+- Chunking, embeddings, RAG, background workers, upload wiring, and
+  any API endpoint for extracted text remain entirely unimplemented —
+  this checkpoint is the service-level bridge only.

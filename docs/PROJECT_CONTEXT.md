@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management) and Document Management CRUD are both fully complete. Document Text Extraction is 3-of-4-ish checkpoints in: **Checkpoint 1** (standalone PDF parser) and **Checkpoint 2** (design review — approved a separate `document_texts` table, not a column on `Document`) are complete, and **Checkpoint 3 (this checkpoint) implements that approved schema.** The `document_texts` table now exists in the real database with the exact constraints the design review specified, but **nothing writes to it yet** — no upload wiring, no parsing orchestration. Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management) and Document Management CRUD are both fully complete. Document Text Extraction is 4-of-5-ish checkpoints in: **Checkpoint 1** (standalone PDF parser), **Checkpoint 2** (design review — approved a separate `document_texts` table), and **Checkpoint 3** (implemented that schema) are complete. **Checkpoint 4 (this checkpoint) connects the two**: a new `document_text_service.parse_and_store_document_text()` function can now actually parse a document's stored file and persist the result into `document_texts`. **It is not wired into upload or any endpoint** — nothing calls it except tests. Nothing has been deployed yet.
 
 ---
 
@@ -80,7 +80,7 @@ Log out and back in ──► document and chat history still there
 2. Backend: save file to storage, insert `documents` row (status=uploading),
    enqueue background job, return document_id immediately (202 Accepted)  ⚠️ synchronous, no status/worker
 3. Frontend: redirects to dashboard, polls GET /documents/{id}/status     ❌ not built (but GET /documents/{id} metadata ✅ exists)
-4. Worker (Arq): extract text, chunk, embed, status -> ready              ❌ not built — parse_service exists, document_texts schema exists, NEITHER is connected to the other or to upload, and there is no worker
+4. Worker (Arq): extract text, chunk, embed, status -> ready              ❌ not built — parse_service + document_text_service exist and are connected to each other (Checkpoint 4), but NEITHER is connected to upload, and there is no worker
 5. Frontend: status becomes "ready", user opens document page             ❌ not built (but GET /documents listing ✅ exists)
 6. User sends chat message                                                ❌ not built
 7. Backend: retrieval + prompt + LLM call                                 ❌ not built
@@ -97,11 +97,12 @@ Log out and back in ──► document and chat history still there
 7. **Storage service** (`app/services/storage_service.py`) — local-disk file save/delete, UUID filenames, extension validation, file location. **Unchanged this checkpoint.**
 8. **Document Management CRUD** — upload, list, detail, download, delete, all authenticated and ownership-isolated. **Unchanged this checkpoint.**
 9. **Standalone PDF text-extraction service** (`app/services/parse_service.py`) — `extract_text(file_path: Path) -> str`. **Unchanged this checkpoint** — still not called from anywhere.
-10. **`document_texts` table** (`app/models/document_text.py`, new this checkpoint) — persists extraction output, per the design approved in Checkpoint 2. `id` (UUID PK), `document_id` (FK → `documents.id`, `ON DELETE CASCADE`, `UNIQUE`, indexed — enforces one-Document-to-zero-or-one-DocumentText at the database level), `content` (`TEXT NOT NULL`, explicitly allowed to be `""`), timestamps via the existing `BaseModel`. No `relationship()`, no `status`/`error`/`parser_version` column, no versioning — all deliberately deferred, per the approved design. **Nothing writes to this table yet — it exists as pure schema, unpopulated.**
+10. **`document_texts` table** (`app/models/document_text.py`) — persists extraction output, per the design approved in Checkpoint 2. `id` (UUID PK), `document_id` (FK → `documents.id`, `ON DELETE CASCADE`, `UNIQUE`, indexed — enforces one-Document-to-zero-or-one-DocumentText at the database level), `content` (`TEXT NOT NULL`, explicitly allowed to be `""`), timestamps via the existing `BaseModel`. No `relationship()`, no `status`/`error`/`parser_version` column, no versioning — all deliberately deferred, per the approved design. **Unchanged this checkpoint.**
+11. **Parse → persist integration** (`app/services/document_text_service.py`, new this checkpoint) — `parse_and_store_document_text(db, *, document)`. Composes `storage_service.get_file_path()` and `parse_service.extract_text()`, then upserts a `DocumentText` row (insert if none exists, update `content` in place if one does — never a duplicate). Parsing happens strictly before any DB write, so a parse failure never touches `document_texts`. Empty extracted text persists as a normal successful result. Commits internally, matching every other mutating `document_service` function. **Accepts an already-authorized `Document` object — performs no ownership check itself.** **Not called from anywhere except its own tests** — no upload wiring, no endpoint.
 
 ### Features NOT yet implemented (in build order, per the Phase 1 design doc)
-- **Wiring `parse_service.extract_text()`'s output into a `document_texts` row.** Both pieces exist independently now; composing them is the next checkpoint's job, not this one's.
-- Automatic parsing on upload, or any reprocessing/reparse trigger.
+- **Wiring `document_text_service.parse_and_store_document_text()` into upload, or any explicit reprocess endpoint.** The function itself is complete and tested; nothing calls it outside tests.
+- Automatic parsing on upload, or any reprocessing/reparse trigger exposed via the API.
 - Parsing status tracking of any kind.
 - Extraction versioning.
 - DOCX/TXT text extraction.
@@ -133,7 +134,7 @@ Log out and back in ──► document and chat history still there
 | Document versioning, restore/undelete, soft-delete | Not planned | Not part of the current model |
 | Redis, Arq, background workers | Deferred until something is demonstrably too slow synchronously | Post-CRUD architectural review finding — nothing yet justifies them |
 | DOCX/TXT extraction | Undecided future checkpoint | PDF-only was a deliberate, scoped Checkpoint 1 decision |
-| **Extracted-text persistence design** | **RESOLVED this checkpoint** | Checkpoint 2 reviewed the options; Checkpoint 3 implemented the approved schema. See Section 11. |
+| **Extracted-text persistence design** | **RESOLVED (Checkpoint 2 design, Checkpoint 3 schema, Checkpoint 4 integration)** | Checkpoint 2 reviewed the options; Checkpoint 3 implemented the approved schema; Checkpoint 4 connected `parse_service` to it. Upload wiring itself remains a separate, not-yet-approved future step. |
 | Extracted-text versioning | Not designed, not blocked | The 1:0..1 unique constraint can be relaxed later if real versioning is ever needed — a deliberate future migration, not designed speculatively now |
 | Parsing status / state machine | Deferred until async processing exists | Presence/absence of a `document_texts` row is the only signal available at this stage; a real status mechanism is explicit future work |
 | `GET /documents/{id}/text` | Not planned unless a real need emerges | Extracted text is internal processing state, not user-visible product content, per Checkpoint 2's explicit API-boundary analysis |
@@ -155,7 +156,7 @@ Log out and back in ──► document and chat history still there
 **JWT (access-token only)**, unchanged this checkpoint. `get_current_user` still consumed by exactly five routes.
 
 ### AI pipeline
-**Still not built as an integrated pipeline**, but its second real primitive now exists: **persistence for extraction output** (`document_texts`), alongside the first (`parse_service`, Checkpoint 1). Neither is connected to the other yet, nor to upload. Design per the Phase 1 doc: PyMuPDF for extraction (implemented, Checkpoint 1), a dedicated persistence table (implemented, this checkpoint), hand-rolled RAG (no LangChain/LlamaIndex), pgvector for retrieval — chunking, embeddings, retrieval, and RAG remain entirely unimplemented.
+**Still not built as an integrated pipeline**, but two real primitives now exist and are connected to each other: **extraction** (`parse_service`, Checkpoint 1) and **persistence** (`document_texts` + `document_text_service.parse_and_store_document_text()`, Checkpoints 3–4). Calling this function with an authorized `Document` genuinely parses the real file and writes a real row — verified against the real dev database this checkpoint, not just asserted. **Neither piece is connected to upload or any endpoint yet.** Design per the Phase 1 doc: PyMuPDF for extraction (implemented), a dedicated persistence table (implemented) with a working parse-and-store bridge (implemented), hand-rolled RAG (no LangChain/LlamaIndex), pgvector for retrieval — chunking, embeddings, retrieval, and RAG remain entirely unimplemented.
 
 **Why `document_texts` is a separate table, not a column on `Document` — the central architectural decision of Checkpoints 2 and 3:** `Document` represents the file's metadata and stored source; `DocumentText` represents derived processing output. Keeping them separate means the existing `select(Document)`-based queries in `document_service.py` (`list_documents_for_user`, `get_document_for_user`, `get_document_file_for_user`) never risk silently loading large extracted text they don't need — SQLAlchemy's default column loading would pull *every* mapped column on `Document` on every one of those calls, so an `extracted_text` column there would have been a real, not hypothetical, performance cost on already-existing, already-live endpoints (`GET /documents` in particular). This was the deciding factor in Checkpoint 2's design review, evaluated against three candidate designs (column-on-Document, separate table, filesystem artifact) in a full comparison matrix.
 
@@ -254,7 +255,8 @@ researchpilot/
 │   │   │   ├── auth_service.py
 │   │   │   ├── document_service.py     # unchanged this checkpoint — does not touch DocumentText
 │   │   │   ├── storage_service.py      # unchanged this checkpoint
-│   │   │   └── parse_service.py        # unchanged this checkpoint
+│   │   │   ├── parse_service.py        # unchanged this checkpoint — called by document_text_service, not directly by anything else
+│   │   │   └── document_text_service.py # NEW this checkpoint — parse_and_store_document_text(), not wired into upload
 │   │   └── workers/
 │   ├── pyproject.toml                  # unchanged this checkpoint — no new dependency
 │   └── tests/
@@ -262,15 +264,16 @@ researchpilot/
 │       ├── test_auth.py                # 12 tests
 │       ├── test_deps.py                # 5 tests
 │       ├── test_document_model.py      # 5 tests — unchanged this checkpoint
-│       ├── test_document_text_model.py # NEW this checkpoint — 6 tests
+│       ├── test_document_text_model.py # 6 tests — unchanged this checkpoint
 │       ├── test_documents_api.py       # 52 tests — unchanged this checkpoint
 │       ├── test_storage_service.py     # 18 tests
-│       └── test_parse_service.py       # 10 tests
+│       ├── test_parse_service.py       # 10 tests
+│       └── test_document_text_service.py # NEW this checkpoint — 8 tests
 └── frontend/                           # untouched this checkpoint
 ```
 
 ### Purpose of every major folder
-Unchanged from the prior sync — see prior sections. **This checkpoint created three files** (`app/models/document_text.py`, `tests/test_document_text_model.py`, the migration) **and modified exactly one existing file** (`app/models/__init__.py`, one line added). `document_service.py`, `app/api/documents.py`, `app/models/document.py`, `app/schemas/document.py`, `storage_service.py`, `parse_service.py`, and every frontend file were **not touched** — verified directly (`grep -c DocumentText`/`document_text` across those files returned `0` for each) rather than merely asserted.
+Unchanged from the prior sync — see prior sections. **This checkpoint created two files** (`app/services/document_text_service.py`, `tests/test_document_text_service.py`) and **modified no existing file** — not even `document_service.py`, `parse_service.py`, or `app/models/document_text.py`, all confirmed untouched directly (`grep -c document_text_service` across `app/api/documents.py`, `app/models/document.py`, `app/schemas/document.py`, `app/models/document_text.py` returned `0` for each).
 
 ---
 
@@ -291,6 +294,8 @@ Unchanged from the prior sync — see prior sections. **This checkpoint created 
 **No `status`, `error`, `parser_version`, or versioning column.** Presence/absence of a `document_texts` row for a given `Document` is the only (implicit, minimal) signal available at this stage for "has this been processed" — a real status mechanism is explicit future work, deferred until asynchronous processing actually exists (per the post-CRUD architectural review's finding, restated in Checkpoint 2's design review).
 
 **Verified against the real database, not just the migration file:** `\d document_texts` confirmed every column/constraint/index/FK matches exactly; a real duplicate `document_id` insert was rejected by the actual unique constraint; a real cascade delete (deleting the parent `Document`) was confirmed to remove the `DocumentText` row; a `DocumentText` referencing a nonexistent `Document` was rejected by the real FK constraint (this project's tests run against real Postgres, not SQLite — the FK is genuinely enforced).
+
+**This checkpoint (4) is the first time a real row was written to this table by application code rather than a test constructing one directly** — `document_text_service.parse_and_store_document_text()` was manually run against the real dev database, producing a real `DocumentText` row from a real parsed PDF, confirmed via direct query, then cleaned up.
 
 ---
 
@@ -324,9 +329,25 @@ Unchanged from the prior sync — see prior sections. **This checkpoint created 
 
 **Verified beyond pytest:** migration applied/rolled-back/reapplied against the real dev database, confirmed `downgrade -1` removes *only* `document_texts` (checked `\dt` before/after, `users`/`documents` untouched); manually inserted a real row with embedded-newline content and confirmed exact preservation; manually triggered and confirmed the real unique-constraint rejection; manually confirmed empty-string content persists and re-fetches correctly; manually confirmed cascade delete removes the `DocumentText` row when its parent `Document` is deleted. All test/manual data cleaned up afterward, confirmed via direct row counts.
 
-**Not yet done, deliberately:** nothing writes to `document_texts` — no upload wiring, no parsing orchestration, no chunking, no embeddings, no background processing, no API endpoint, no status tracking, no versioning. All explicitly out of scope per this checkpoint's own instructions, not oversights.
+**Not yet done, deliberately:** as of Checkpoint 3 itself, nothing wrote to `document_texts` — no upload wiring, no parsing orchestration. **This changed in Checkpoint 4, immediately below** — the table now has a real writer, still not wired into upload.
 
 **Process note:** during implementation, a stray `git init` was run by mistake in the sandbox while attempting to check git status (this sandbox has never had a git repository throughout this project's entire history — the real repository lives on the user's own machine). It was caught and reverted immediately; no git operation of any kind was actually performed against anything meaningful, and this checkpoint's instructions to avoid all git operations were otherwise followed exactly.
+
+### Document Text Extraction — Checkpoint 4: Parse → persist integration (this checkpoint)
+**What it does:** Adds `app/services/document_text_service.py` with `parse_and_store_document_text(db, *, document)` — the first place `parse_service` (Checkpoint 1) and `document_texts` (Checkpoint 3) are actually connected.
+
+**Key decisions:**
+- **A dedicated service file, not a 6th function on `document_service.py`.** Mirrors the Document/DocumentText separation already made at the DB layer one level up: `document_service` owns Document metadata; `document_text_service` owns the derived-text parse-and-persist operation. This was presented as a genuine judgment call before implementation (both options were defensible) and approved explicitly before coding began.
+- **Accepts an already-authorized `Document` object, not a `document_id`.** Performs zero ownership checks itself — deliberately, to avoid duplicating the existing `get_document_for_user` ownership-check pattern or introducing a second authorization model. The caller (a future upload-wiring or reprocess endpoint, neither of which exists yet) is responsible for having obtained the `Document` through an already-authorized path.
+- **Upsert, not insert-only.** A document with no existing `DocumentText` gets one inserted; one that already has a row gets its `content` updated in place — never a duplicate, and the `UNIQUE` constraint on `document_id` makes this structurally guaranteed, not just intended. `created_at` naturally preserves first-parsed time; `updated_at`'s existing auto-refresh naturally captures last-reparsed time, with no new column. Deliberately not versioned.
+- **Parsing happens strictly before any `document_texts` read or write.** A parse failure propagates unmodified (`ParseError`, `UnsupportedFormatError`, or `storage_service.StoredFileNotFoundError`) and the table is never touched — a consequence of call ordering, not a try/except/rollback.
+- **Empty extracted text (`""`) persists as a normal successful result**, with zero special-casing.
+- **Commits internally**, matching every existing mutating `document_service` function — confirmed by direct inspection of `create_document`/`delete_document_for_user` before writing this function, not assumed.
+- **Not wired into upload or any endpoint.** No new route, no `DocumentResponse` change, no `Document` schema change, no new migration — `alembic check` confirmed "No new upgrade operations detected" after implementation.
+**Files:** `backend/app/services/document_text_service.py` (new), `backend/tests/test_document_text_service.py` (new). No existing file modified — confirmed via `grep` that `document_text_service` appears nowhere in `app/api/documents.py`, `app/models/document.py`, `app/schemas/document.py`, or `app/models/document_text.py`.
+**Tests:** 8 new — single-page parse+persist, multi-page order preservation, blank-PDF persists `""`, corrupted PDF raises `ParseError` with zero persistence, missing file raises `StoredFileNotFoundError` with zero persistence, `.docx` raises `UnsupportedFormatError` with zero persistence, reprocessing updates the existing row (same id, `created_at` preserved, `updated_at` advanced, still exactly one row), and a **real** (not simulated) persistence-failure test — the parent `Document` is deleted out from under an already-fetched reference before the write, so the insert legitimately violates the real FK constraint. Test setup uses `document_service.create_document()` itself for realistic `Document` rows (real file on disk, real `storage_path`) rather than hand-constructing them. **116 backend tests passing overall (108 pre-existing + 8 new), zero regressions.**
+**Verified beyond pytest:** ran the real function against the real dev database and real files — a real successful parse+persist, a real empty-PDF persist (row confirmed to exist with `content == ""`), a real corrupted-PDF failure (confirmed `ParseError` raised and confirmed via direct query that no row was created). All test data cleaned up afterward, confirmed via row counts.
+**Not yet done, deliberately:** upload wiring, any reprocess endpoint, chunking, embeddings, background processing, status tracking, versioning, any API surface for extracted text.
 
 ---
 
@@ -338,7 +359,7 @@ Unchanged from the prior sync — see prior sections. **This checkpoint created 
 
 ## 9. API ENDPOINTS
 
-**Unchanged this checkpoint — no route was added, modified, or removed.** `document_texts` is not exposed via HTTP in any form, per explicit instruction.
+**Unchanged this checkpoint — no route was added, modified, or removed.** `document_texts` is not exposed via HTTP in any form, per explicit instruction. This remains true after Checkpoint 4 too — `document_text_service.parse_and_store_document_text()` exists and works, but nothing in `app/api/` calls it.
 
 | Method | Route | Purpose | Auth required? |
 |---|---|---|---|
@@ -375,6 +396,14 @@ Unchanged from the prior sync — see prior sections. **This checkpoint created 
 
 54. **Extracted text is not exposed via any API endpoint.** It's internal processing state feeding a future chunking/RAG pipeline, not user-visible product content in its own right — evaluated explicitly against the project's actual Phase 1 acceptance criteria (chat answers with citations, not raw extracted text as a standalone artifact).
 
+55. **`document_text_service.py` is a dedicated file, not a 6th function on `document_service.py`** (Checkpoint 4). Presented as a genuine judgment call before implementation — both options were defensible — and approved explicitly rather than decided silently. Mirrors the Document/DocumentText separation already made at the DB layer one level up: each distinct concern (Document metadata CRUD; derived-text parse-and-persist) gets its own service file, matching the existing meta-pattern where `storage_service` and `parse_service` are each their own focused file rather than folded into `document_service`.
+
+56. **`parse_and_store_document_text()` accepts an already-authorized `Document` object, not a `document_id`.** Performs zero ownership checks of its own. The alternative (accept `document_id`, do its own lookup) would have meant either duplicating `get_document_for_user`'s ownership-check pattern in a second place, or — worse — an internal authorization bypass. The chosen signature makes the function's contract explicit: it trusts its caller completely, and every real caller (upload wiring, a future reprocess endpoint) already has an authorized `Document` in hand by the time it would call this function.
+
+57. **Upsert semantics for `DocumentText`, chosen explicitly over reject-on-duplicate or delete-and-recreate.** A document with no existing row gets one inserted; one that already has a row gets `content` updated in place. This can never violate the `document_id` `UNIQUE` constraint (structurally, not just by convention), and — as a free byproduct of using UPDATE rather than DELETE+INSERT — `created_at` naturally preserves the first-parsed timestamp while `updated_at`'s already-proven auto-refresh naturally captures the last-reparsed timestamp, with no new column needed for that signal. This is deliberately the smallest behavior that doesn't foreclose real versioning later: if multi-version history is ever needed, that's a future migration relaxing the `UNIQUE` constraint, and this function's "find-existing-else-insert" shape extends naturally into "always insert a new version" without a structural rewrite.
+
+58. **Parsing is sequenced strictly before any `document_texts` read or write.** This isn't enforced by a transaction or a rollback — it's a direct consequence of the function's call order (`get_file_path` → `extract_text` → only then query/write `DocumentText`). A parse failure at either of the first two steps means the third step is never reached, so "no DocumentText created/overwritten on parse failure" is true by construction rather than by exception handling.
+
 ---
 
 ## 12. CURRENT TASK STATUS
@@ -390,13 +419,14 @@ Unchanged from the prior sync — see prior sections. **This checkpoint created 
 - Post-CRUD architectural review (review-only).
 - Document Text Extraction Checkpoint 1 — Standalone PDF parse service.
 - Document Text Extraction Checkpoint 2 — Design review (review-only) — approved.
-- **Document Text Extraction Checkpoint 3 — `document_texts` schema. Complete.**
+- Document Text Extraction Checkpoint 3 — `document_texts` schema.
+- **Document Text Extraction Checkpoint 4 — Parse → persist integration. Complete.**
 
-**Git state:** per the prior checkpoint's report, everything through Checkpoint 1 was committed and pushed (commit `415db5f`). **This checkpoint's changes are implemented, tested, and verified but explicitly NOT yet committed or pushed** — per this checkpoint's own instructions. This sandbox has no git repository at all (confirmed); the user reviews and commits on their own machine.
+**Git state:** per the prior checkpoint's report, everything through Checkpoint 3 was committed and pushed (commit `4247e8b`). **This checkpoint's changes are implemented, tested, and verified but explicitly NOT yet committed or pushed** — per this checkpoint's own instructions. This sandbox has no git repository at all (confirmed again this checkpoint); the user reviews and commits on their own machine.
 
 **Not started at all:**
-- Wiring `parse_service` output into `document_texts` (the natural next checkpoint).
-- Automatic parsing on upload or any reprocessing trigger.
+- Wiring `document_text_service.parse_and_store_document_text()` into upload, or any explicit reprocess endpoint.
+- Automatic parsing on upload or any reprocessing trigger exposed via the API.
 - DOCX/TXT extraction.
 - Chunking, embeddings, pgvector usage, similarity search.
 - Background worker, Redis, Arq.
@@ -405,22 +435,25 @@ Unchanged from the prior sync — see prior sections. **This checkpoint created 
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None in the sense of half-written features. `document_texts` is fully working schema for its own, deliberately narrow scope — it just isn't populated by anything yet, which is this checkpoint's intended end state, not a gap.
+**Partially completed work:** None in the sense of half-written features. `document_text_service.py` is fully working and tested for its own, deliberately narrow scope — it's a callable function nothing calls yet outside tests, which is this checkpoint's intended end state, not a gap.
 
 ---
 
 ## 13. NEXT TASK
 
-**Document Text Extraction — Checkpoint 4 (recommended, not yet approved): wire `parse_service.extract_text()`'s output into `document_texts`.**
+**Document Text Extraction — Checkpoint 5 (recommended, not yet approved): wire `document_text_service.parse_and_store_document_text()` into an actual call site.**
 
-This is a recommendation carried forward from this checkpoint's own final report, not a decision made unilaterally — the user's explicit instruction was "do NOT automatically implement the next checkpoint," so this section states the natural next step without assuming it's approved.
+This is a recommendation carried forward from this checkpoint's own final report, not a decision made unilaterally — the explicit instruction was not to wire upload automatically in Checkpoint 4, so this section states the natural next step without assuming it's approved.
 
-Likely shape, per the pattern already established across every prior multi-checkpoint milestone in this project: a narrow, single-purpose checkpoint that calls `parse_service.extract_text()` at some call site (most likely composed into `document_service.create_document()`, mirroring exactly how `storage_service` is already composed there — but this should be confirmed, not assumed, since a separate reprocessing endpoint or explicit "process" trigger remain legitimate alternatives) and inserts a `DocumentText` row. Failure handling (what happens to the upload if parsing fails) is a real design question for that checkpoint, not decided here.
+Likely shape: either (a) compose it into `document_service.create_document()` so every upload is parsed synchronously in the same request, mirroring exactly how `storage_service` is already composed there, or (b) a separate, explicit reprocess/process trigger (an endpoint or CLI-style call) that fetches an already-authorized `Document` via `get_document_for_user` and calls the new function. Both remain legitimate — this should be confirmed, not assumed, when that checkpoint is actually planned. Failure handling if wired into upload (should a parse failure fail the whole upload, or should the file/Document row still be created with no `DocumentText`?) is a real design question for that checkpoint, not decided here.
 
-**Confirmed decisions from Checkpoints 2/3 (do not re-litigate without a new reason):**
+**Confirmed decisions from Checkpoints 2/3/4 (do not re-litigate without a new reason):**
 - Separate `document_texts` table, not a `Document` column.
 - 1:0..1 via a unique constraint, no versioning.
-- No status column, no relationship(), no API endpoint.
+- No status column, no `relationship()`, no API endpoint.
+- Dedicated `document_text_service.py`, not folded into `document_service.py`.
+- Upsert (update-in-place), not reject-on-duplicate or delete-and-recreate.
+- The integration function accepts an authorized `Document`, performs no authorization itself.
 
 ---
 
@@ -433,8 +466,9 @@ Likely shape, per the pattern already established across every prior multi-check
   - **Document Management CRUD ✅ done** (list, detail, download, delete).
   - **Document Text Extraction Checkpoint 1 (standalone parse service) ✅ done** — not yet wired into anything.
   - **Document Text Extraction Checkpoint 2 (schema/storage design) ✅ done** — separate `document_texts` table approved.
-  - **Document Text Extraction Checkpoint 3 (`document_texts` schema implemented) ✅ done** — table exists, unpopulated.
-  - Document Text Extraction Checkpoint 4 (wire parser output into the table) — recommended next, not yet approved.
+  - **Document Text Extraction Checkpoint 3 (`document_texts` schema implemented) ✅ done** — table exists.
+  - **Document Text Extraction Checkpoint 4 (parse → persist integration) ✅ done** — `document_text_service.parse_and_store_document_text()` works, not wired into upload.
+  - Document Text Extraction Checkpoint 5 (wire the integration into upload or a reprocess endpoint) — recommended next, not yet approved.
   - Chunking, embeddings, pgvector, RAG, chat — not started.
   - Frontend document management (Task 3C) — not started.
   - Deployment (Railway + Vercel) — not started.
@@ -493,7 +527,9 @@ See Section 12.
 
 *(Unchanged sections — origin/philosophy, resume-evolution framing, verification discipline, rejected-ideas list — carry forward from the prior sync. Additions below.)*
 
-**Checkpoints 2 and 3 together are a clean example of this project's "design first, implement second, as separately-approved steps" discipline working end-to-end.** Checkpoint 2 produced a full comparison matrix across three real candidate designs (column-on-Document, separate table, filesystem artifact) and was explicitly approved before any code was written; Checkpoint 3 then implemented exactly what was approved, with zero deviation — no scope crept in, no "while I'm in here" additions, no relationship() or status column snuck in despite both being easy to add. Worth pointing to as a template for the next design-then-build pair this project encounters (a likely candidate: chunking strategy, which will face a similar "where does this live and how does it relate to existing tables" question).
+**Checkpoints 2 and 3 together are a clean example of this project's "design first, implement second, as separately-approved steps" discipline working end-to-end.** Checkpoint 2 produced a full comparison matrix across three real candidate designs (column-on-Document, separate table, filesystem artifact) and was explicitly approved before any code was written; Checkpoint 3 then implemented exactly what was approved, with zero deviation — no scope crept in, no "while I'm in here" additions, no relationship() or status column snuck in despite both being easy to add. **Checkpoint 4 continued this same discipline one level up the stack**: before writing any code, a Phase 1 inspection + Phase 2 design-decisions report was produced covering nine separate sub-decisions (service location, function signature, transaction ownership, ownership-check behavior, path resolution, error propagation, unsupported-format behavior, empty-text behavior, duplicate/reparse behavior), flagged the one genuine judgment call (dedicated service file vs. extending `document_service.py`) explicitly rather than picking silently, and only proceeded to implementation after explicit line-by-line approval. Worth continuing this pattern for Checkpoint 5's own design questions (most likely: does a parse failure fail the whole upload, or not?).
+
+**A real, non-fragile technique worth reusing for future "test a genuine persistence failure" needs:** rather than mocking the database or fabricating infrastructure, Checkpoint 4's persistence-failure test deletes the parent `Document` out from under an already-fetched in-memory reference (safe because `expire_on_commit=False` keeps the object's attributes readable post-delete) before attempting the dependent write — producing a real FK violation from real Postgres, not a simulated one. This is a reusable pattern for testing referential-integrity failure modes anywhere else in this codebase without needing new test infrastructure.
 
 **Every completed task/checkpoint has been manually or programmatically verified against real infrastructure, not just written and assumed correct — this checkpoint continued that discipline for a schema-only piece of work with a genuinely narrow surface:** the migration was hand-reviewed before being applied (not blindly trusted), then actually applied to a real database, actually rolled back and reapplied, and the resulting table actually inspected with `\d`. The unique constraint, the FK constraint, and the cascade-delete behavior were each triggered for real (not just asserted to work by the code's own docstring) both in the automated test suite and in a separate, independent manual verification pass against the real dev database.
 

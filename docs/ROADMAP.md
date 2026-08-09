@@ -32,5 +32,6 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Checkpoint 1 — Standalone PDF parse service (`app/services/parse_service.py`), not wired into upload
   - [x] Checkpoint 2 — Schema/storage design reviewed and approved (separate `document_texts` table, 1:0..1)
   - [x] Checkpoint 3 — `document_texts` table implemented (schema only; nothing writes to it yet)
-  - [ ] Checkpoint 4 — Wire `parse_service` output into `document_texts` (not started)
+  - [x] Checkpoint 4 — Parse -> persist integration (`document_text_service.py`, not wired into upload)
+  - [ ] Checkpoint 5 — Wire integration into upload or a reprocess endpoint (not started, not yet approved)
 - [ ] Task 3C — Document management (frontend) — planned at a high level only
