@@ -678,3 +678,71 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - Chunking, embeddings, RAG, background workers, upload wiring, and
   any API endpoint for extracted text remain entirely unimplemented —
   this checkpoint is the service-level bridge only.
+
+### Document Text Extraction — Checkpoint 5: Explicit processing endpoint
+- Added `POST /api/v1/documents/{document_id}/process` to
+  `app/api/documents.py` — the first real, authenticated caller of
+  `document_text_service.parse_and_store_document_text()` outside of
+  tests.
+- Preceded by two dedicated design-review turns before any code was
+  written: one comparing synchronous upload-wiring against a separate
+  explicit endpoint across ten evaluation dimensions, and a second
+  resolving the endpoint's exact response contract against four
+  concrete alternatives. Both were explicitly approved before
+  implementation began.
+- **Explicit endpoint chosen over automatic upload wiring.** A parse
+  failure is now fully isolated to its own request/response and can
+  never affect `/upload`'s success/failure semantics — sidestepping a
+  "should upload fail if parsing fails?" policy question that would
+  otherwise have required new compensating-transaction/rollback logic
+  this codebase doesn't have anywhere else. `/upload` and
+  `create_document()` were not modified in any way.
+- **The same endpoint also serves as the reprocess mechanism**, for
+  free — no separate reprocess endpoint or duplicate-prevention logic
+  was added; `parse_and_store_document_text()`'s existing upsert
+  behavior (Checkpoint 4) already makes calling `/process` again on
+  the same document safe (same row, `content` updated in place, no
+  duplicate).
+- **Ownership check reused exactly as-is** via
+  `document_service.get_document_for_user()` — no new authorization
+  helper, no duplicated WHERE clause. A nonexistent document and one
+  owned by another user both return an identical `404`.
+- **Success response is the existing `DocumentResponse`, at `200`** —
+  never `DocumentText` or its `content`. Extracted text remains
+  internal processing state, not exposed by this or any endpoint.
+- **Error mapping mirrors the router's existing exception-translation
+  style:** `UnsupportedFormatError`/`ParseError` → `422`;
+  `StoredFileNotFoundError` → `500` (mirrors download's identical
+  handling of the same underlying condition). No broad
+  `except Exception` anywhere.
+- Added `tests/test_document_process_api.py` — 11 new tests: success
+  (asserts response shape and that a real `DocumentText` row was
+  persisted with the correct content), reprocessing (calls `/process`
+  twice, asserts exactly one row exists and is updated in place, not
+  duplicated), nonexistent document (`404`), another user's document
+  (`404`, indistinguishable from nonexistent, confirms nothing was
+  processed), unsupported format (`.docx` upload, `422`, confirms no
+  row created), corrupted PDF (`422`, confirms no row created),
+  missing stored file (deleted from disk mid-test, `500`, confirms no
+  row created), authentication required (no token and invalid token,
+  both `401`), invalid UUID path parameter (`422`), and response-shape
+  verification that the body never contains `content`,
+  `extracted_text`, `storage_path`, or `stored_filename`. **127
+  backend tests passing overall (116 pre-existing + 11 new), zero
+  regressions** — the full suite was run against a real, freshly
+  provisioned PostgreSQL 16 instance both before and after this
+  checkpoint's changes.
+- Verified beyond pytest: `alembic current`/`heads`/`check` confirmed
+  the migration head is unchanged and no new migration was generated;
+  `git diff --stat`/`--name-only`/`--check` confirmed the implementation change surface is exactly `app/api/documents.py` (modified) plus `tests/test_document_process_api.py` (new); the checkpoint also updates the five project documentation files listed above, with no whitespace
+  errors; explicit `git diff --quiet` checks confirmed
+  `document_service.py`, `document_text_service.py`,
+  `parse_service.py`, `storage_service.py`, `document.py`,
+  `document_text.py`, `schemas/document.py`, all three Alembic
+  migration files, and everything under `frontend/` are byte-for-byte
+  unchanged.
+- Chunking, embeddings, pgvector, RAG, chat, background workers,
+  Redis/Arq, OCR, any status/processing-state column, parser
+  versioning, a `GET` endpoint for extracted text, frontend work, and
+  deployment all remain entirely unimplemented — this checkpoint adds
+  one endpoint and nothing else.

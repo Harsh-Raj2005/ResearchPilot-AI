@@ -3,17 +3,24 @@ Documents router.
 
 Task 3B Checkpoint 3 scope: upload. Document Management CRUD
 Checkpoint 1: authenticated listing. Checkpoint 2: authenticated
-detail. Checkpoint 3: authenticated download. Checkpoint 4 (this
-checkpoint): authenticated delete — completes the full CRUD surface.
-This is `get_current_user`'s consumer for all five routes — every
-route here requires a valid bearer token.
+detail. Checkpoint 3: authenticated download. Checkpoint 4: authenticated
+delete — completed the full CRUD surface. Document Text Extraction
+Checkpoint 5 (this checkpoint): authenticated processing — triggers
+text extraction for an already-uploaded document on demand. This is
+`get_current_user`'s consumer for all six routes — every route here
+requires a valid bearer token.
 
 Deliberately thin: routes validate their own path/query params
 (document_id's type, pagination bounds), enforce the size cap on
 upload (the one piece of validation that genuinely belongs at this
 layer — see Section 11 #24), and delegate everything else to
-document_service. No business logic and no direct DB query or
-filesystem access lives here.
+document_service / document_text_service. No business logic and no
+direct DB query or filesystem access lives here.
+
+Upload does NOT call document_text_service — processing is an
+explicit, separate operation the caller triggers via
+POST /{document_id}/process, not an automatic side effect of upload.
+See PROJECT_CONTEXT.md for the design rationale (Checkpoint 5).
 """
 import uuid
 
@@ -26,7 +33,7 @@ from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.document import DocumentResponse
-from app.services import document_service, storage_service
+from app.services import document_service, document_text_service, parse_service, storage_service
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -198,3 +205,69 @@ async def delete_document(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
         )
+
+
+@router.post("/{document_id}/process", response_model=DocumentResponse)
+async def process_document(
+    document_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DocumentResponse:
+    """
+    Parse a document owned by the authenticated user and persist the
+    extracted text — Document Text Extraction Checkpoint 5's explicit
+    processing operation.
+
+    Deliberately a separate, on-demand endpoint rather than an
+    automatic step of upload (see PROJECT_CONTEXT.md for the full
+    Checkpoint 5 design rationale): upload's existing behavior is
+    completely unchanged by this route's addition.
+
+    Same indistinguishable-404 behavior as every other {document_id}
+    route for "doesn't exist" vs. "belongs to someone else" — both
+    flow through the existing get_document_for_user() ownership
+    check, reused as-is rather than duplicated here.
+
+    Returns the existing DocumentResponse (200) on success — the same
+    Document, re-serialized. Deliberately never returns DocumentText
+    or its `content`: extracted text remains internal processing
+    state, not something this (or any) endpoint exposes (see
+    PROJECT_CONTEXT.md Section 11 #54).
+
+    Calling this endpoint again for an already-processed document is
+    how reprocessing works — parse_and_store_document_text() already
+    upserts (update-in-place), so no separate reprocess mechanism or
+    duplicate-prevention logic is needed here.
+
+    Error mapping, mirroring this file's existing exception-translation
+    style (see upload/download above):
+    - UnsupportedFormatError -> 422 (the document's content can't be
+      processed by this parser, e.g. a non-PDF upload)
+    - ParseError -> 422 (the file exists but its content is invalid
+      or corrupted, so extraction can't produce a result)
+    - StoredFileNotFoundError -> 500 (a server-side data-integrity
+      problem — the Document row is valid and owned by the caller,
+      but its file is missing from disk — distinct from a client
+      error, same as download's identical handling)
+    """
+    document = await document_service.get_document_for_user(
+        db, document_id=document_id, user_id=current_user.id
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
+    try:
+        await document_text_service.parse_and_store_document_text(db, document=document)
+    except (parse_service.UnsupportedFormatError, parse_service.ParseError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except storage_service.StoredFileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="The stored file for this document could not be found.",
+        ) from exc
+
+    return DocumentResponse.model_validate(document)

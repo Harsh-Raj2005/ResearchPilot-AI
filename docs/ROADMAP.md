@@ -2,7 +2,7 @@
 
 Full phase breakdown lives in the Phase 0 planning document. Summary:
 
-- **Phase 1** (current): single-document upload + chat, deployed.
+- **Phase 1** (current, in progress — target end state): single-document upload + chat, deployed.
 - **Phase 2**: multiple documents, semantic search, collections.
 - **Phase 3**: notes, highlights, tags, GROBID metadata extraction.
 - **Phase 4**: multi-paper comparison (candidate point to introduce Qdrant).
@@ -22,16 +22,17 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Checkpoint 2 — Storage service (local disk, UUID filenames, extension validation)
   - [x] Checkpoint 3 — Document upload API (`get_current_user`'s first real consumer)
   - [x] Checkpoint 4 — Housekeeping (env, .gitignore, docker-compose volume, docs)
-- [ ] Document list/detail/download/delete — not scheduled to a task yet
+- [x] Document Management CRUD — **complete**
+  - [x] Upload — `POST /api/v1/documents/upload`
   - [x] List — `GET /api/v1/documents`, paginated, own documents only
   - [x] Detail — `GET /api/v1/documents/{document_id}`, 404 for not-owned/nonexistent (indistinguishable)
   - [x] Download — `GET /api/v1/documents/{document_id}/file`, same ownership isolation, streamed via FastAPI FileResponse
   - [x] Delete — `DELETE /api/v1/documents/{document_id}`, file deleted before DB row (see PROJECT_CONTEXT.md for ordering rationale)
-- [x] Document Management CRUD — **complete** (upload, list, detail, download, delete)
-- [ ] Document Text Extraction
+- [x] Document Text Extraction
   - [x] Checkpoint 1 — Standalone PDF parse service (`app/services/parse_service.py`), not wired into upload
   - [x] Checkpoint 2 — Schema/storage design reviewed and approved (separate `document_texts` table, 1:0..1)
   - [x] Checkpoint 3 — `document_texts` table implemented (schema only; nothing writes to it yet)
   - [x] Checkpoint 4 — Parse -> persist integration (`document_text_service.py`, not wired into upload)
-  - [ ] Checkpoint 5 — Wire integration into upload or a reprocess endpoint (not started, not yet approved)
+  - [x] Checkpoint 5 — Explicit processing endpoint (`POST /documents/{document_id}/process`), decided over automatic upload wiring; upload remains unchanged; reprocessing supported via the existing upsert behavior
+- [x] Document Text Extraction — **complete** (parse service, `document_texts` schema, parse-to-persist integration, explicit processing endpoint — upload itself still does not auto-parse, by design)
 - [ ] Task 3C — Document management (frontend) — planned at a high level only

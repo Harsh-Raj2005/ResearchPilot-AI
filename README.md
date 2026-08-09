@@ -18,15 +18,16 @@ end-to-end — `POST /api/v1/documents/upload`, `GET
 /api/v1/documents/{document_id}` are all live, with consistent
 ownership isolation and indistinguishable 404s throughout. A
 standalone PDF text-extraction service (`app/services/parse_service.py`)
-now exists and is fully tested, but **is not yet wired into upload or
-any endpoint** — uploaded documents are not automatically parsed yet.
-A `document_texts` table now exists to persist extraction output, and
-a `document_text_service.parse_and_store_document_text()` function can
-now perform that persistence — but **parsing does not happen
-automatically on upload**; nothing calls this function yet except
-tests. Embeddings, RAG, and chat are not implemented. See
-`docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
-for the task-by-task history.
+exists and is fully tested. Extracted text is persisted via a
+`document_texts` table and `document_text_service.parse_and_store_document_text()`.
+**Document Text Extraction Checkpoint 5 adds an explicit processing
+endpoint, `POST /api/v1/documents/{document_id}/process`** — parsing
+is triggered on demand by this endpoint, not automatically on upload.
+Calling it again for an already-processed document reprocesses it
+in place. Extracted text itself is never returned by any endpoint —
+it remains internal processing state. Chunking, embeddings, RAG, and
+chat are not implemented. See `docs/PROJECT_CONTEXT.md` for full
+current state and `CHANGELOG.md` for the task-by-task history.
 
 ## Stack
 

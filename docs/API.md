@@ -155,4 +155,30 @@ Delete a document owned by the current user — removes both the stored file and
 **Response `422`** — `document_id` is not a valid UUID
 **Response `500`** — the file exists but could not be deleted for a genuine filesystem reason (not "already missing" — see above). The database record is deliberately left untouched in this case.
 
-_This completes the full Document Management CRUD surface (upload, list, detail, download, delete). Document parsing, embeddings, RAG, and chat are not implemented — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._
+_This completes the full Document Management CRUD surface (upload, list, detail, download, delete)._
+
+### `POST /documents/{document_id}/process`
+Parse a document owned by the current user and persist the extracted text (Document Text Extraction Checkpoint 5). This is an **explicit, on-demand operation** — upload does **not** automatically trigger it.
+
+**Path parameter:** `document_id` (UUID)
+
+**Response `200`**
+```json
+{
+  "id": "uuid",
+  "original_filename": "thesis.pdf",
+  "content_type": "application/pdf",
+  "file_size_bytes": 123456,
+  "created_at": "2026-01-01T00:00:00Z"
+}
+```
+The response is the same `DocumentResponse` shape used by upload/list/detail — it **never** includes the extracted text (`DocumentText.content`) or any internal storage field. Extracted text remains internal processing state, not something any current endpoint serves back to the client.
+
+Calling this endpoint again for an already-processed document **reprocesses** it — the underlying service upserts (updates the existing extracted-text row in place) rather than creating a duplicate. There is no separate reprocess endpoint; this one endpoint serves both purposes.
+
+**Response `401`** — missing or invalid token
+**Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical behavior to detail/download/delete — indistinguishable from a nonexistent ID.
+**Response `422`** — `document_id` is not a valid UUID, *or* the document's stored file has an unsupported format for parsing (currently PDF-only), *or* the file exists but is corrupted/invalid and cannot be parsed.
+**Response `500`** — the document row exists and is owned by the caller, but its stored file is missing from disk (a server-side data-integrity problem, not a client error — identical in spirit to download's `500` for the same condition).
+
+_Document parsing is now available on demand via this endpoint. Chunking, embeddings, RAG, and chat are not implemented — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._
