@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management) and Document Management CRUD are both fully complete. Document Text Extraction is now complete through **Checkpoint 5**: **Checkpoint 1** (standalone PDF parser), **Checkpoint 2** (design review — approved a separate `document_texts` table), **Checkpoint 3** (implemented that schema), and **Checkpoint 4** (`document_text_service.parse_and_store_document_text()`, the parse-to-persist bridge) were already complete. **Checkpoint 5 (this checkpoint) wires that function into a real, authenticated HTTP endpoint**: `POST /api/v1/documents/{document_id}/process`. Processing is an explicit, on-demand operation the caller triggers — **upload still does not automatically parse a document**, by deliberate design (see Section 2 and Section 11 #59-#61 for the full rationale). Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, and Document Text Extraction (Checkpoints 1–5, ending in the explicit `POST /api/v1/documents/{document_id}/process` endpoint) are all fully complete on the backend. **Task 3C (this checkpoint) builds the frontend document-management experience on top of that existing backend contract** — a protected `/documents` route with list, upload, download, delete, and an explicit "Process" action. No backend route, schema, or contract changed to support this — the frontend consumes exactly what already existed. Nothing has been deployed yet.
 
 ---
 
@@ -99,7 +99,8 @@ Log out and back in ──► document and chat history still there
 9. **Standalone PDF text-extraction service** (`app/services/parse_service.py`) — `extract_text(file_path: Path) -> str`. **Unchanged this checkpoint.**
 10. **`document_texts` table** (`app/models/document_text.py`) — persists extraction output, per the design approved in Checkpoint 2. `id` (UUID PK), `document_id` (FK → `documents.id`, `ON DELETE CASCADE`, `UNIQUE`, indexed — enforces one-Document-to-zero-or-one-DocumentText at the database level), `content` (`TEXT NOT NULL`, explicitly allowed to be `""`), timestamps via the existing `BaseModel`. No `relationship()`, no `status`/`error`/`parser_version` column, no versioning — all deliberately deferred, per the approved design. **Unchanged this checkpoint.**
 11. **Parse → persist integration** (`app/services/document_text_service.py`) — `parse_and_store_document_text(db, *, document)`. Composes `storage_service.get_file_path()` and `parse_service.extract_text()`, then upserts a `DocumentText` row (insert if none exists, update `content` in place if one does — never a duplicate). Parsing happens strictly before any DB write, so a parse failure never touches `document_texts`. Empty extracted text persists as a normal successful result. Commits internally, matching every other mutating `document_service` function. **Accepts an already-authorized `Document` object — performs no ownership check itself.** **Unchanged this checkpoint** — its signature, contract, and internal behavior are exactly what Checkpoint 4 already implemented and tested; this checkpoint only adds a real caller.
-12. **Document processing endpoint** (`POST /api/v1/documents/{document_id}/process`, new this checkpoint) — the first real caller of `parse_and_store_document_text()` outside of tests. Obtains the `Document` via the existing `document_service.get_document_for_user()` ownership check (no new authorization logic), calls the unmodified `document_text_service.parse_and_store_document_text()`, translates its domain exceptions to HTTP status codes following the same pattern already used by upload/download, and returns the existing `DocumentResponse` (never `DocumentText` or its `content`). Calling it again for an already-processed document reprocesses it in place via the service's existing upsert behavior — no new reprocessing logic was needed. **Upload does not call this endpoint's logic; the two remain entirely independent operations**, per the approved Checkpoint 5 design (see Section 11 #59-#61).
+12. **Document processing endpoint** (`POST /api/v1/documents/{document_id}/process`) — the first real caller of `parse_and_store_document_text()` outside of tests. Obtains the `Document` via the existing `document_service.get_document_for_user()` ownership check (no new authorization logic), calls the unmodified `document_text_service.parse_and_store_document_text()`, translates its domain exceptions to HTTP status codes following the same pattern already used by upload/download, and returns the existing `DocumentResponse` (never `DocumentText` or its `content`). Calling it again for an already-processed document reprocesses it in place via the service's existing upsert behavior — no new reprocessing logic was needed. **Upload does not call this endpoint's logic; the two remain entirely independent operations** (see Section 11 #59-#61).
+13. **Frontend document management** (Task 3C, new this checkpoint) — a protected `/documents` route (`frontend/src/pages/DocumentsPage.tsx`), gated by a new `ProtectedRoute` component that redirects unauthenticated visitors to `/login` — the project's first real frontend route guard. Consumes the existing backend contract exactly as it already was: paginated list (`skip`/`limit`, "Load more"), upload (multipart), download (blob, saved via the document's own `original_filename`), delete (with a confirm step), and an explicit "Process" button wired to `POST /documents/{document_id}/process`. New frontend-only capabilities added to support this: authenticated request helpers in `services/api.ts` (`getAuth`/`postAuth`/`uploadAuth`/`deleteAuth`/`downloadAuth`, plus an `ApiError` class carrying HTTP status) — the project's first authenticated frontend API calls of any kind. **No backend route, schema, or contract changed** — every call matches an endpoint that already existed before this checkpoint.
 
 ### Features NOT yet implemented (in build order, per the Phase 1 design doc)
 - Automatic parsing on upload — deliberately not built; processing is explicit-only by design (see Section 11 #59).
@@ -110,7 +111,7 @@ Log out and back in ──► document and chat history still there
 - Background worker (Arq), Redis.
 - Chat session + chat message models and endpoints.
 - RAG service (retrieval + prompt assembly + LLM call).
-- Frontend: Dashboard page, Upload button, Document card, Document view page, PDF viewer, Chat panel (Task 3C) — untouched this checkpoint.
+- Frontend: document detail page, PDF viewer/annotation, chat panel, research workspace of any kind — deliberately not part of Task 3C's scope (a dedicated detail page was evaluated and rejected: `DocumentResponse`'s four fields already fit in a list row).
 - Deployment (Railway for backend/worker/Postgres/Redis, Vercel for frontend) — **nothing is deployed yet**.
 - Sentry error tracking.
 - Google OAuth login (deferred to Phase 2/12 by design).
@@ -145,16 +146,16 @@ Log out and back in ──► document and chat history still there
 ## 3. CURRENT ARCHITECTURE
 
 ### Backend
-**FastAPI (Python, async).** Unchanged this checkpoint.
+**FastAPI (Python, async).** Unchanged this checkpoint — no backend route, schema, or contract was touched to support the frontend work below.
 
 ### Frontend
-**React + TypeScript + Vite.** Untouched this checkpoint.
+**React + TypeScript + Vite.** This checkpoint adds the project's first protected route (`ProtectedRoute`) and first authenticated API calls (`services/api.ts`'s `*Auth` helpers). No new dependency, routing library, CSS framework, or state-management library was introduced — everything extends the existing `react-router-dom` + hand-rolled-fetch + inline-styles conventions already established by the auth pages.
 
 ### Database
 **PostgreSQL**, `pgvector`. **Three tables: `users`, `documents`, `document_texts`.** No schema change this checkpoint — still three migrations total.
 
 ### Authentication
-**JWT (access-token only)**, unchanged this checkpoint. `get_current_user` now consumed by six routes (the five existing document routes plus the new process endpoint).
+**JWT (access-token only)**, backend unchanged this checkpoint. `get_current_user` still consumed by six routes — no new backend route was added. On the frontend, the existing token/email held in `AuthContext` is now actually used to make authenticated calls for the first time (previously stored but never sent on any request). A `401` from any document call triggers `logout()` + redirect to `/login`, since the frontend has no token-refresh mechanism and a `401` here can only mean an expired/invalid token.
 
 ### AI pipeline
 **Still not built as an integrated pipeline**, but the pieces that exist are now reachable end-to-end via a real API call: **extraction** (`parse_service`, Checkpoint 1), **persistence** (`document_texts` + `document_text_service.parse_and_store_document_text()`, Checkpoints 3–4), and now **an authenticated HTTP trigger** (`POST /documents/{document_id}/process`, Checkpoint 5). Calling the endpoint with a real, owned `Document` genuinely parses the real file and writes a real row — verified this checkpoint via the actual test suite against real Postgres. **Upload still does not call any of this — processing remains a separate, explicit operation**, a deliberate design choice made in a dedicated design-review pass before implementation (see Section 11 #59-#61). Design per the Phase 1 doc: PyMuPDF for extraction (implemented), a dedicated persistence table (implemented) with a working parse-and-store bridge (implemented) now callable via HTTP (implemented), hand-rolled RAG (no LangChain/LlamaIndex), pgvector for retrieval — chunking, embeddings, retrieval, and RAG remain entirely unimplemented.
@@ -190,10 +191,15 @@ email-validator>=2.1.0
 python-multipart>=0.0.9
 pymupdf>=1.24.0
 ```
-**No new dependency this checkpoint** — a new route on an existing FastAPI router needs nothing beyond what's already installed.
+**No new backend dependency this checkpoint.**
 
-### Frontend
-Unchanged. Untouched this checkpoint.
+### Frontend (from `frontend/package.json`)
+```
+react ^19.2.8
+react-dom ^19.2.8
+react-router-dom ^7.18.2
+```
+**No new dependency this checkpoint** — the new authenticated fetch helpers, protected route, and documents page all use what was already installed (native `fetch`/`FormData`/`Blob`, existing `react-router-dom` primitives). No HTTP client library, no form library, no CSS framework was added.
 
 ### Database
 PostgreSQL 16. **Three tables: `users`, `documents`, `document_texts`.** Still three migrations — no schema change this checkpoint.
@@ -219,63 +225,45 @@ researchpilot/
 ├── README.md
 ├── docker-compose.yml
 ├── docs/
-│   ├── API.md                          # MODIFIED this checkpoint — documents POST /documents/{id}/process
+│   ├── API.md                          # unchanged this checkpoint — no backend route changed
 │   ├── ARCHITECTURE.md                 # unchanged this checkpoint
-│   └── ROADMAP.md                      # MODIFIED this checkpoint — Checkpoint 5 marked complete
-├── backend/
-│   ├── .env.example
-│   ├── Dockerfile
-│   ├── alembic.ini
-│   ├── alembic/
-│   │   └── versions/
-│   │       ├── 0618947abd34_create_users_table.py
-│   │       ├── 23fed3dde01d_create_documents_table.py
-│   │       └── f5a18872f21b_create_document_texts_table.py   # unchanged this checkpoint — no new migration
-│   ├── app/
-│   │   ├── main.py                     # unchanged — no new router registered (process lives on the existing documents router)
-│   │   ├── api/
-│   │   │   ├── auth.py
-│   │   │   ├── documents.py            # MODIFIED this checkpoint — adds POST /{document_id}/process
-│   │   │   └── health.py
-│   │   ├── core/
-│   │   │   ├── config.py
-│   │   │   ├── security.py
-│   │   │   └── deps.py
-│   │   ├── db/
-│   │   │   └── session.py
-│   │   ├── models/
-│   │   │   ├── __init__.py
-│   │   │   ├── base.py
-│   │   │   ├── user.py
-│   │   │   ├── document.py             # unchanged this checkpoint — no extracted_text column
-│   │   │   └── document_text.py        # unchanged this checkpoint
-│   │   ├── schemas/
-│   │   │   ├── auth.py
-│   │   │   └── document.py             # unchanged this checkpoint — process endpoint reuses DocumentResponse as-is
-│   │   ├── services/
-│   │   │   ├── auth_service.py
-│   │   │   ├── document_service.py     # unchanged this checkpoint — get_document_for_user() reused as-is, no new logic
-│   │   │   ├── storage_service.py      # unchanged this checkpoint
-│   │   │   ├── parse_service.py        # unchanged this checkpoint
-│   │   │   └── document_text_service.py # unchanged this checkpoint — parse_and_store_document_text() called exactly as it already existed
-│   │   └── workers/
-│   ├── pyproject.toml                  # unchanged this checkpoint — no new dependency
-│   └── tests/
-│       ├── conftest.py                 # unchanged
-│       ├── test_auth.py                # 12 tests
-│       ├── test_deps.py                # 5 tests
-│       ├── test_document_model.py      # 5 tests
-│       ├── test_document_text_model.py # 6 tests
-│       ├── test_documents_api.py       # 52 tests — unchanged this checkpoint
-│       ├── test_storage_service.py     # 18 tests
-│       ├── test_parse_service.py       # 10 tests
-│       ├── test_document_text_service.py # 8 tests
-│       └── test_document_process_api.py  # NEW this checkpoint — 11 tests, HTTP-level tests for the new endpoint
-└── frontend/                           # untouched this checkpoint
+│   └── ROADMAP.md                      # MODIFIED this checkpoint — Task 3C marked complete
+├── backend/                             # unchanged this checkpoint — see prior sync for full backend tree
+│   ├── app/api/documents.py            # unchanged this checkpoint (Checkpoint 5's contract, consumed as-is)
+│   └── tests/                          # unchanged this checkpoint — 127 tests, all still passing
+└── frontend/
+    ├── .env.example
+    ├── Dockerfile
+    ├── index.html
+    ├── package.json                    # unchanged this checkpoint — no new dependency
+    ├── vite.config.ts
+    └── src/
+        ├── App.tsx                     # MODIFIED — registers the new /documents route behind ProtectedRoute; home placeholder links to it
+        ├── main.tsx
+        ├── index.css
+        ├── components/
+        │   └── ProtectedRoute.tsx      # NEW — the project's first real route guard
+        ├── constants/
+        │   └── routes.ts               # MODIFIED — adds ROUTES.documents = "/documents"
+        ├── context/
+        │   └── AuthContext.tsx         # unchanged this checkpoint
+        ├── hooks/
+        │   └── useAuth.ts              # unchanged this checkpoint
+        ├── pages/
+        │   ├── LoginPage.tsx           # unchanged this checkpoint
+        │   ├── SignupPage.tsx          # unchanged this checkpoint
+        │   └── DocumentsPage.tsx       # NEW — list/upload/download/delete/process UI
+        ├── services/
+        │   ├── api.ts                  # MODIFIED — adds ApiError + getAuth/postAuth/uploadAuth/deleteAuth/downloadAuth
+        │   ├── auth.ts                 # unchanged this checkpoint
+        │   └── document.ts             # NEW — listDocuments/uploadDocument/deleteDocument/processDocument/downloadDocument
+        └── types/
+            ├── auth.ts                 # unchanged this checkpoint
+            └── document.ts             # NEW — mirrors app/schemas/document.py's DocumentResponse exactly
 ```
 
 ### Purpose of every major folder
-Unchanged from the prior sync — see prior sections. **This checkpoint modified one existing file** (`app/api/documents.py` — added the new route and one new import line for `document_text_service`/`parse_service`) **and created one new file** (`tests/test_document_process_api.py`). **Confirmed untouched by direct `git diff` inspection:** `app/services/document_service.py`, `app/services/document_text_service.py`, `app/services/parse_service.py`, `app/services/storage_service.py`, `app/models/document.py`, `app/models/document_text.py`, `app/schemas/document.py`, all three Alembic migration files, and everything under `frontend/`.
+Backend unchanged from the prior sync — see prior sections. **This checkpoint (Task 3C) is frontend-only.** New: `frontend/src/components/` (previously an empty placeholder directory — `ProtectedRoute.tsx` is its first real occupant), `frontend/src/services/document.ts`, `frontend/src/types/document.ts`. Modified: `frontend/src/App.tsx`, `frontend/src/constants/routes.ts`, `frontend/src/services/api.ts`. **Confirmed untouched by direct `git diff` inspection:** every file under `backend/`, `frontend/src/context/AuthContext.tsx`, `frontend/src/hooks/useAuth.ts`, `frontend/src/pages/LoginPage.tsx`, `frontend/src/pages/SignupPage.tsx`, `frontend/src/services/auth.ts`, `frontend/src/types/auth.ts`, `frontend/package.json`, `frontend/package-lock.json`.
 
 ---
 
@@ -334,13 +322,36 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 
 **Verified beyond pytest:** the full backend test suite was run against a real, freshly-provisioned PostgreSQL 16 instance (not SQLite, not mocked) both **before** this checkpoint's changes (confirming the pre-existing 116-test baseline genuinely passes) and **after** (confirming 127 pass with zero regressions). `alembic current`, `alembic heads`, and `alembic check` were all run for real, confirming the migration head is unchanged and no new migration was generated. `git diff --stat`, `git diff --name-only`, and `git diff --check` were all run for real against the actual repository, confirming the exact, minimal change surface and no whitespace/formatting errors.
 
-**Not yet done, deliberately:** automatic upload parsing, any status/processing-state column, parser versioning, chunking, embeddings, pgvector usage, RAG, chat, background workers, Redis/Arq, OCR, a `GET` endpoint for extracted text, frontend work of any kind, and deployment.
+**Not yet done, deliberately:** automatic upload parsing, any status/processing-state column, parser versioning, chunking, embeddings, pgvector usage, RAG, chat, background workers, Redis/Arq, OCR, a `GET` endpoint for extracted text, document detail page, PDF viewer/annotation, research-workspace UI, and deployment.
+
+### Task 3C: Frontend document management (this checkpoint)
+**What it does:** Builds the frontend document-management experience described in Section 2 (#13) on top of the existing, unmodified backend contract — a protected `/documents` route with list, upload, download, delete, and an explicit "Process" action. This was preceded by a dedicated design/scope-review turn (before any code was written) that inspected the actual frontend (framework, routing, styling, existing conventions, and — critically — the fact that `services/api.ts` had only `get`/`post` and no authenticated-request capability at all) and the actual backend contract, then defined the six-part scope (list, upload, download, delete, process, and the new route guard) and flagged two real open questions (401 handling, list-refresh strategy) for explicit decision before implementation.
+
+**Key decisions:**
+- **A real `ProtectedRoute` component, the project's first route guard.** Every prior route (including `/`) rendered regardless of auth state and only varied its own content. `/documents` is the first route that genuinely cannot render for a logged-out visitor — it redirects to `/login` (`replace`, so the protected route doesn't linger in browser history for the back button to return to).
+- **401 from any document call triggers `logout()` + redirect to `/login`.** The frontend has no token-refresh mechanism, so a `401` from an already-authenticated call can only mean an expired or invalid token — nothing else is worth doing with it. Implemented via a small `ApiError` class (extends `Error`, carries `status`) added to `services/api.ts`, so callers can branch on the HTTP status without parsing the message string; existing `err instanceof Error` checks in `LoginPage`/`SignupPage` keep working unchanged since `ApiError` still extends `Error`.
+- **List is refetched from scratch after every mutation** (upload/delete/process), not updated optimistically — the simplest option that stays correct, matching this project's existing preference for "the simplest thing that works" (e.g. the backend's own plain `skip`/`limit` pagination instead of a pagination framework).
+- **No document detail page.** `DocumentResponse`'s four fields (filename, content type, size, created date) already fit in a list row; a dedicated detail route would be an empty page dressed up as a feature. Confirmed as a deliberate omission, not an oversight.
+- **No persisted "processed" status badge.** The backend has no status field of any kind (Section 11 #53) — showing one would be inventing state the server doesn't track. "Process" success shows a transient inline confirmation message per row instead, and calling it again is legitimate reprocessing, not blocked by the UI.
+- **Download uses the document's own `original_filename`** (already held client-side from the list) rather than parsing the `Content-Disposition` response header — which isn't readable cross-origin without an additional backend CORS `expose_headers` change that was explicitly out of this task's approved scope. This kept the entire feature frontend-only with zero backend changes.
+- **Authenticated request helpers added to `services/api.ts`** (`getAuth`, `postAuth`, `uploadAuth`, `deleteAuth`, `downloadAuth`) — the project's first authenticated frontend API calls of any kind (previously documented in `api.ts`'s own comment as "added when the first protected endpoint needs it"). Each takes the bearer `token` as an explicit argument rather than reading it from `AuthContext` itself, mirroring `services/auth.ts`'s existing "nothing here knows about React" boundary. `uploadAuth` builds a `FormData` and deliberately does not set `Content-Type` (the browser sets the multipart boundary automatically).
+- **No new dependency.** No HTTP client library, form library, pagination library, or CSS framework was added — everything extends the existing hand-rolled `fetch` wrapper, `react-router-dom` primitives, and inline-styled component pattern already established by `LoginPage`/`SignupPage`.
+
+**Files:** New — `frontend/src/components/ProtectedRoute.tsx`, `frontend/src/pages/DocumentsPage.tsx`, `frontend/src/services/document.ts`, `frontend/src/types/document.ts`. Modified — `frontend/src/App.tsx` (registers `/documents`, adds a link from the home placeholder), `frontend/src/constants/routes.ts` (adds `documents: "/documents"`), `frontend/src/services/api.ts` (adds `ApiError` + the five `*Auth` helpers). **No backend file modified** — confirmed via `git diff --quiet` against every file under `backend/`.
+
+**Verification:**
+- `npm run build` (`tsc -b && vite build`): clean, zero TypeScript errors.
+- `npm run lint` (oxlint, the project's configured linter): 0 warnings, 0 errors across all 15 frontend source files.
+- Backend regression: full suite re-run, **127 passed**, unchanged — confirms no backend behavior was affected.
+- **Full manual end-to-end verification against the actual running FastAPI server** (not mocked, not simulated): signup → login → list documents (empty) → upload a real PDF (multipart) → list documents (populated) → process (200, `DocumentResponse`) → download (200, verified the downloaded bytes are a real, valid PDF via the `file` command) → delete (204) → unauthenticated request (401, confirming the `ProtectedRoute`/401-handling assumption) → invalid token (401). Every request shape exercised matches exactly what the new frontend code sends.
+
+**Not yet done, deliberately:** document detail page, PDF viewer/annotation, chat, any research-workspace UI, any backend change of any kind, deployment.
 
 ---
 
 ## 8. AUTHENTICATION FLOW
 
-**Unchanged this checkpoint.** `get_current_user` is now consumed by six routes instead of five, but its own implementation was not touched.
+**Backend unchanged this checkpoint.** `get_current_user` still consumed by exactly six routes; its implementation was not touched. **Frontend:** the token/email already held in `AuthContext` since Task 2.3 are, for the first time, actually sent on requests — every document call attaches `Authorization: Bearer <token>` via the new `*Auth` helpers in `services/api.ts`. A `401` response from any of them logs the user out (`AuthContext.logout()`) and redirects to `/login`.
 
 ---
 
@@ -411,34 +422,31 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 - Task 3B Checkpoints 1–4 — Document data layer, storage service, upload API, housekeeping.
 - Document Management CRUD Checkpoints 1–4 — List, detail, download, delete. **Complete.**
 - Post-CRUD architectural review (review-only).
-- Document Text Extraction Checkpoint 1 — Standalone PDF parse service.
-- Document Text Extraction Checkpoint 2 — Design review (review-only) — approved.
-- Document Text Extraction Checkpoint 3 — `document_texts` schema.
-- Document Text Extraction Checkpoint 4 — Parse → persist integration.
-- **Document Text Extraction Checkpoint 5 — Explicit processing endpoint (`POST /documents/{document_id}/process`). Complete.**
+- Document Text Extraction Checkpoints 1–5 — parser, schema, parse-to-persist integration, explicit processing endpoint. **Complete.**
+- **Task 3C — Frontend document management. Complete.**
 
-**Git state:** per the prior checkpoint's report, everything through Checkpoint 4 was committed and pushed (commit `4a71a78`). **This checkpoint's changes are implemented, tested, and verified but explicitly NOT yet committed or pushed** — per this checkpoint's own instructions. This time, unlike prior checkpoints, the actual repository (including its real `.git` history) was directly available and inspected — `git status`, `git log`, `git diff --stat`/`--name-only`/`--check` were all run for real against it, not simulated or described from memory.
+**Git state:** everything through Checkpoint 5 (backend) was already implemented and verified in this working tree; **this checkpoint (Task 3C) adds frontend-only changes on top of that same uncommitted working tree.** Still nothing has been committed or pushed — per this checkpoint's own instructions. `git status`, `git diff --stat`/`--name-only`/`--check` were run for real against the actual repository, confirming the exact combined change surface (Checkpoint 5's backend/doc changes plus this checkpoint's frontend changes).
 
 **Not started at all:**
-- Automatic parsing on upload — deliberately not built; this is a confirmed design decision (#59), not an oversight.
+- Automatic parsing on upload — deliberately not built; a confirmed design decision, not an oversight.
 - DOCX/TXT extraction.
 - Chunking, embeddings, pgvector usage, similarity search.
 - Background worker, Redis, Arq.
 - Any status/processing-state column, parser versioning.
 - Everything related to chat.
-- All frontend pages/components beyond auth.
+- Document detail page, PDF viewer/annotation, any research-workspace UI.
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None. The process endpoint is complete and fully tested for its approved, deliberately narrow scope — it triggers processing and reprocessing on demand; it does not track status, does not run in the background, and does not expose extracted text.
+**Partially completed work:** None. Task 3C is complete and fully verified for its approved, deliberately narrow scope — document management only, no research-intelligence UI of any kind.
 
 ---
 
 ## 13. NEXT TASK
 
-**Document Text Extraction is now complete through Checkpoint 5.** The next task is genuinely open and not yet designed — candidates, per the roadmap's remaining phases, include: Task 3C (frontend document management — upload UI, document list/detail pages, and eventually calling `/process` from the UI), DOCX/TXT text extraction (parse_service is currently PDF-only by deliberate Checkpoint 1 scoping), or beginning the chunking/embeddings work that RAG will depend on. None of these has been discussed, designed, or approved — this section intentionally does not recommend one over the others, since no design-review conversation has happened yet for whichever comes next.
+**Task 3C is now complete.** The next task is genuinely open and not yet designed — candidates, per the roadmap's remaining phases, include: DOCX/TXT text extraction (`parse_service` is currently PDF-only by deliberate Checkpoint 1 scoping), beginning the chunking/embeddings work that RAG will depend on, or a first deployment pass. None of these has been discussed, designed, or approved — this section intentionally does not recommend one over the others, since no design-review conversation has happened yet for whichever comes next.
 
-**Confirmed decisions from Checkpoints 2–5 (do not re-litigate without a new reason):**
+**Confirmed decisions from Checkpoints 2–5 and Task 3C (do not re-litigate without a new reason):**
 - Separate `document_texts` table, not a `Document` column.
 - 1:0..1 via a unique constraint, no versioning.
 - No status column, no `relationship()`.
@@ -447,23 +455,23 @@ Unchanged from the prior sync — see prior sections. **This checkpoint modified
 - The integration function accepts an authorized `Document`, performs no authorization itself.
 - Processing is triggered by an explicit endpoint, not automatically on upload.
 - The process endpoint returns `DocumentResponse`, never `DocumentText` or extracted text.
+- No document detail page — list rows already show everything `DocumentResponse` provides.
+- No persisted "processed" status anywhere, frontend or backend — the backend doesn't track one.
+- A `401` from any authenticated frontend call triggers logout + redirect to `/login`.
+- No HTTP client library, form library, or CSS framework introduced on the frontend — everything extends the existing hand-rolled `fetch` + inline-styles pattern.
 
 ---
 
 ## 14. ROADMAP
 
-- **Phase 1 (current, in progress):** Single-document upload + chat, deployed.
+- **Phase 1 (current, in progress — target end state):** single-document upload + chat, deployed.
   - Auth ✅ done.
   - Protected-route dependency (`get_current_user`) ✅ done, consumed by 6 routes.
   - **Task 3B (Document Management backend, upload-only scope) ✅ done.**
   - **Document Management CRUD ✅ done** (list, detail, download, delete).
-  - **Document Text Extraction Checkpoint 1 (standalone parse service) ✅ done.**
-  - **Document Text Extraction Checkpoint 2 (schema/storage design) ✅ done** — separate `document_texts` table approved.
-  - **Document Text Extraction Checkpoint 3 (`document_texts` schema implemented) ✅ done** — table exists.
-  - **Document Text Extraction Checkpoint 4 (parse → persist integration) ✅ done** — `document_text_service.parse_and_store_document_text()` works.
-  - **Document Text Extraction Checkpoint 5 (explicit processing endpoint) ✅ done** — `POST /documents/{document_id}/process` is live; upload remains unmodified.
+  - **Document Text Extraction Checkpoints 1–5 ✅ done** — parser, schema, parse-to-persist integration, explicit processing endpoint (`POST /documents/{document_id}/process`); upload remains unmodified.
+  - **Task 3C (frontend document management) ✅ done** — protected `/documents` route; list, upload, download, delete, and an explicit "Process" action, all on the existing backend contract with zero backend changes.
   - Chunking, embeddings, pgvector, RAG, chat — not started.
-  - Frontend document management (Task 3C) — not started.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.
 - **Phase 3:** Notes, highlights, tags; GROBID metadata extraction.
@@ -538,3 +546,12 @@ See Section 12.
 - **Returning `DocumentText.content` (or a new bespoke schema) from the process endpoint (Checkpoint 5)** — considered and rejected in the response-contract design turn in favor of reusing the existing `DocumentResponse` — see Design Decision #61.
 
 **A note on the human collaborator's working style, further confirmed:** the "design-first, implementation-second, each separately approved" pattern is now demonstrated at three distinct layers across three consecutive checkpoints (Checkpoint 3's database schema, Checkpoint 4's service composition, Checkpoint 5's API contract) — this is clearly the project's standing default, not a one-off. Also confirmed this checkpoint: the collaborator is willing to have the advisor/implementation split within a single long conversation (design turns, then an explicit "implement it now" turn with a fully-specified, pre-approved contract) rather than requiring a hard context switch to a separate chat — worth recognizing that pattern rather than assuming implementation always requires starting over.
+
+**Task 3C extended the "design first, implement second" pattern to the frontend for the first time.** A dedicated scope/design turn inspected the actual frontend (not assumed from memory) before any code was written — and that inspection surfaced a real, non-obvious finding: `services/api.ts` had no authenticated-request capability at all (`get`/`post` only), no route guard existed anywhere, and `components/` was an empty placeholder directory. None of this was visible from the backend or from prior chat summaries; it only came from actually reading the frontend source. Worth remembering for any future frontend task: **the backend's completeness says nothing about the frontend's readiness** — always inspect the frontend fresh rather than assuming parity.
+
+**A verification technique worth reusing for future frontend-consumes-backend tasks:** rather than trusting that the frontend's `fetch` calls match the backend's actual contract by code review alone, Task 3C started the real FastAPI server in the sandbox and ran the exact request shapes the new frontend code sends (multipart upload, authenticated GET/POST/DELETE, blob download) against it with `curl`, end-to-end, confirming real 200/201/204/401 responses and a genuinely valid downloaded PDF — not just that the TypeScript compiled. This is a stronger check than a type-level contract match and is worth repeating for any future frontend feature that consumes an existing backend endpoint.
+
+**Rejected ideas worth remembering so they aren't re-proposed as if new** *(further addition):*
+- **A document detail page (Task 3C)** — rejected because `DocumentResponse`'s four fields already fit in a list row; a dedicated route would be an empty page.
+- **A persisted "processing status" badge on the frontend (Task 3C)** — rejected because the backend has no status field to back it; showing one would fabricate state the server doesn't track.
+- **Parsing `Content-Disposition` for the download filename (Task 3C)** — rejected in favor of using the already-known `original_filename` client-side, avoiding an otherwise-necessary backend CORS `expose_headers` change that would have been an unapproved backend modification.

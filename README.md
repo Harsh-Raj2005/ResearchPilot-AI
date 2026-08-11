@@ -25,9 +25,16 @@ endpoint, `POST /api/v1/documents/{document_id}/process`** — parsing
 is triggered on demand by this endpoint, not automatically on upload.
 Calling it again for an already-processed document reprocesses it
 in place. Extracted text itself is never returned by any endpoint —
-it remains internal processing state. Chunking, embeddings, RAG, and
-chat are not implemented. See `docs/PROJECT_CONTEXT.md` for full
-current state and `CHANGELOG.md` for the task-by-task history.
+it remains internal processing state.
+
+**Task 3C adds the frontend document-management experience.** The
+frontend now has a protected `/documents` route (unauthenticated
+visitors are redirected to `/login`) with a full document list,
+upload, download, delete, and an explicit "Process" action wired to
+the endpoint above — all built on the existing backend contract with
+no new backend routes. Chunking, embeddings, RAG, and chat are not
+implemented. See `docs/PROJECT_CONTEXT.md` for full current state and
+`CHANGELOG.md` for the task-by-task history.
 
 ## Stack
 

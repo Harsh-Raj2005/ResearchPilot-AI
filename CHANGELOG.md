@@ -734,7 +734,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   checkpoint's changes.
 - Verified beyond pytest: `alembic current`/`heads`/`check` confirmed
   the migration head is unchanged and no new migration was generated;
-  `git diff --stat`/`--name-only`/`--check` confirmed the implementation change surface is exactly `app/api/documents.py` (modified) plus `tests/test_document_process_api.py` (new); the checkpoint also updates the five project documentation files listed above, with no whitespace
+  `git diff --stat`/`--name-only`/`--check` confirmed the change
+  surface is exactly `app/api/documents.py` (modified) plus
+  `tests/test_document_process_api.py` (new), with no whitespace
   errors; explicit `git diff --quiet` checks confirmed
   `document_service.py`, `document_text_service.py`,
   `parse_service.py`, `storage_service.py`, `document.py`,
@@ -746,3 +748,75 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   versioning, a `GET` endpoint for extracted text, frontend work, and
   deployment all remain entirely unimplemented — this checkpoint adds
   one endpoint and nothing else.
+
+### Task 3C — Frontend document management
+- Preceded by a dedicated scope/design-review turn (before any code
+  was written) that inspected the actual frontend and backend
+  contract directly rather than from memory — and surfaced that
+  `services/api.ts` had no authenticated-request capability at all,
+  no route guard existed anywhere, and `components/` was an empty
+  placeholder directory. The six-part scope (list, upload, download,
+  delete, process, route guard) and two open policy questions (401
+  handling, list-refresh strategy) were confirmed before
+  implementation began.
+- Added `frontend/src/components/ProtectedRoute.tsx` — the project's
+  first real route guard. Redirects unauthenticated visitors to
+  `/login` (with `replace`, so the protected route doesn't linger in
+  browser history). `/documents` is wrapped in it in `App.tsx`.
+- Added `frontend/src/pages/DocumentsPage.tsx` — the full document-
+  management UI: paginated list (`skip`/`limit`, "Load more"),
+  upload (native file input, `.pdf/.docx/.txt` hint), download
+  (triggers a browser download via a Blob + temporary anchor, using
+  the document's own `original_filename`), delete (with a native
+  `confirm()` step), and an explicit "Process" button per row wired
+  to `POST /documents/{document_id}/process`. Loading, empty, and
+  per-row error/success states throughout. No document detail page
+  (the four `DocumentResponse` fields already fit in a list row) and
+  no persisted "processed" status badge (the backend has no such
+  field) — both deliberate, not oversights.
+- Added `frontend/src/services/document.ts` and
+  `frontend/src/types/document.ts` — mirrors the existing
+  `services/auth.ts`/`types/auth.ts` convention exactly;
+  `DocumentResponse` matches `app/schemas/document.py` field-for-field.
+- Extended `frontend/src/services/api.ts` with the project's first
+  authenticated request helpers: `getAuth`, `postAuth`, `uploadAuth`
+  (multipart, deliberately omits `Content-Type` so the browser sets
+  the multipart boundary), `deleteAuth`, and `downloadAuth` (returns
+  a `Blob`). Added an `ApiError` class (extends `Error`, carries the
+  HTTP `status`) so callers can detect `401` without parsing the
+  error message string — existing `err instanceof Error` checks in
+  `LoginPage`/`SignupPage` keep working unchanged.
+- **Policy decisions made explicitly, not defaulted silently:** a
+  `401` from any document call logs the user out and redirects to
+  `/login` (the frontend has no token-refresh mechanism, so a `401`
+  here can only mean an expired/invalid token); the document list is
+  refetched from scratch after every mutation rather than updated
+  optimistically, matching this project's existing "simplest option
+  that works" convention.
+- Updated `frontend/src/App.tsx` (registers `/documents`, adds a
+  "View my documents" link from the home placeholder for
+  authenticated users) and `frontend/src/constants/routes.ts` (adds
+  `documents: "/documents"`).
+- **No backend file modified.** No new backend route, schema, or
+  migration — every frontend call matches an endpoint that already
+  existed. Confirmed via `git diff --quiet` against every file under
+  `backend/`.
+- **No new dependency, frontend or backend.** No HTTP client library,
+  form library, pagination library, or CSS framework was introduced
+  — everything extends the existing hand-rolled `fetch` wrapper,
+  `react-router-dom` primitives, and inline-styled component pattern.
+- Verified: `npm run build` (`tsc -b && vite build`) clean, zero
+  TypeScript errors; `npm run lint` (oxlint) — 0 warnings, 0 errors
+  across all 15 frontend source files; full backend suite re-run,
+  **127 passed, unchanged** (confirms zero backend regression).
+- **Verified end-to-end against the actual running FastAPI server**
+  (not mocked): signup → login → list documents (empty) → upload a
+  real PDF (multipart) → list documents (populated) → process (200,
+  `DocumentResponse`) → download (200, confirmed the downloaded bytes
+  are a real, valid PDF via the `file` command) → delete (204) →
+  unauthenticated request (401) → invalid token (401). Every request
+  shape the new frontend code sends was exercised directly against
+  real backend responses.
+- Document detail page, PDF viewer/annotation, chat, any research-
+  workspace UI, and any backend change of any kind remain out of
+  scope and unimplemented — this task is document management only.
