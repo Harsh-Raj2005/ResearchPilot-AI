@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, and Document Text Extraction (Checkpoints 1–5, ending in the explicit `POST /api/v1/documents/{document_id}/process` endpoint) are all fully complete on the backend. **Task 3C (this checkpoint) builds the frontend document-management experience on top of that existing backend contract** — a protected `/documents` route with list, upload, download, delete, and an explicit "Process" action. No backend route, schema, or contract changed to support this — the frontend consumes exactly what already existed. Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), and Task 3C (frontend document management) are all fully complete. **This milestone (Document Chunking) adds the first consumer of persisted extracted text**: `POST /api/v1/documents/{document_id}/process` now also splits the extracted text into deterministic, ordered chunks and persists them atomically alongside the text — one new table (`document_chunks`), two new backend services (`chunk_service.py`, `document_processing_service.py`), no new endpoint, no frontend change. Chunks remain entirely internal processing state, same treatment as extracted text before them. Nothing has been deployed yet.
 
 ---
 
@@ -146,30 +146,34 @@ Log out and back in ──► document and chat history still there
 ## 3. CURRENT ARCHITECTURE
 
 ### Backend
-**FastAPI (Python, async).** Unchanged this checkpoint — no backend route, schema, or contract was touched to support the frontend work below.
+**FastAPI (Python, async).** This milestone adds two new service files (`chunk_service.py`, `document_processing_service.py`), one modified service (`document_text_service.py`, extended not rewritten), one new model (`DocumentChunk`), and one new migration. No new route, no route-level contract change — `/process`'s request/response shape is identical.
 
 ### Frontend
-**React + TypeScript + Vite.** This checkpoint adds the project's first protected route (`ProtectedRoute`) and first authenticated API calls (`services/api.ts`'s `*Auth` helpers). No new dependency, routing library, CSS framework, or state-management library was introduced — everything extends the existing `react-router-dom` + hand-rolled-fetch + inline-styles conventions already established by the auth pages.
+**React + TypeScript + Vite.** Untouched this milestone — chunks are internal processing state with no frontend surface, same treatment as extracted text.
 
 ### Database
-**PostgreSQL**, `pgvector`. **Three tables: `users`, `documents`, `document_texts`.** No schema change this checkpoint — still three migrations total.
+**PostgreSQL**, `pgvector`. **Four tables: `users`, `documents`, `document_texts`, `document_chunks`** (new this milestone). Four migrations total.
 
 ### Authentication
-**JWT (access-token only)**, backend unchanged this checkpoint. `get_current_user` still consumed by six routes — no new backend route was added. On the frontend, the existing token/email held in `AuthContext` is now actually used to make authenticated calls for the first time (previously stored but never sent on any request). A `401` from any document call triggers `logout()` + redirect to `/login`, since the frontend has no token-refresh mechanism and a `401` here can only mean an expired/invalid token.
+Unchanged this milestone.
 
 ### AI pipeline
-**Still not built as an integrated pipeline**, but the pieces that exist are now reachable end-to-end via a real API call: **extraction** (`parse_service`, Checkpoint 1), **persistence** (`document_texts` + `document_text_service.parse_and_store_document_text()`, Checkpoints 3–4), and now **an authenticated HTTP trigger** (`POST /documents/{document_id}/process`, Checkpoint 5). Calling the endpoint with a real, owned `Document` genuinely parses the real file and writes a real row — verified this checkpoint via the actual test suite against real Postgres. **Upload still does not call any of this — processing remains a separate, explicit operation**, a deliberate design choice made in a dedicated design-review pass before implementation (see Section 11 #59-#61). Design per the Phase 1 doc: PyMuPDF for extraction (implemented), a dedicated persistence table (implemented) with a working parse-and-store bridge (implemented) now callable via HTTP (implemented), hand-rolled RAG (no LangChain/LlamaIndex), pgvector for retrieval — chunking, embeddings, retrieval, and RAG remain entirely unimplemented.
+**Extraction and chunking are now both real and connected**: `parse_service` (Checkpoint 1) → `document_texts` persistence (Checkpoints 3–4) → **`document_chunks` persistence (this milestone)**, all triggered by the single authenticated `POST /documents/{document_id}/process` call (Checkpoint 5). A new orchestration layer, `document_processing_service.process_document()`, composes the text-upsert and chunk-replace operations **inside one transaction** — this is the milestone's central architectural addition, not just "one more service." Embeddings, vector storage, retrieval, and RAG remain entirely unimplemented; pgvector is installed but unused. Design per the Phase 1 doc: PyMuPDF for extraction (implemented), a dedicated persistence table for text (implemented), a dedicated persistence table for chunks (implemented, this milestone), hand-rolled RAG (no LangChain/LlamaIndex) — chunking is deliberately character-count-based with no tokenizer/NLP dependency, since nothing downstream yet needs token counts.
+
+**Why chunks live in their own table, FK'd to `DocumentText` rather than `Document` — the central architectural decision of this milestone:** a chunk is derived from *extracted text*, not from the source file directly — when a document is reprocessed and `DocumentText.content` changes, chunks regenerate from that new content. Tying the FK to `document_text_id` (rather than also carrying a redundant `document_id`) avoids a second, independently-driftable path back to the parent document; `chunk → document_text → document` is the single source of truth, mirroring the "no redundant FKs, explicit queries only" pattern already established by `DocumentText` itself.
+
+**Why text persistence and chunk persistence had to become one transaction, not two independent commits:** the original design (each service committing independently) had a real consistency gap — a chunk-persistence failure after a successful text commit could leave a document with *new* extracted text paired with *stale or missing* chunks, silently wrong state no endpoint would ever surface as an error. The fix: `document_text_service.py` gained a new private, non-committing `_upsert_document_text()` (the existing public `parse_and_store_document_text()` is now a thin wrapper around it, unchanged in behavior); `chunk_service.py` exposes only a private, non-committing `_replace_chunks()` (no public self-committing chunk API exists, since no real caller needs one); `document_processing_service.process_document()` calls both, then issues the single `db.commit()`. This relies on `app/db/session.py`'s existing `get_db` dependency (`async with AsyncSessionLocal() as session:`) — SQLAlchemy's `AsyncSession.close()`, called automatically on any exception propagating out of a route handler, implicitly rolls back uncommitted work, so a chunk-persistence failure after a flushed-but-uncommitted text change leaves the database exactly as it was before the request. Verified directly, not just reasoned about: `test_document_processing_service.py` forces this exact failure and asserts the prior committed state survives unchanged.
 
 **Why `document_texts` is a separate table, not a column on `Document` — the central architectural decision of Checkpoints 2 and 3:** `Document` represents the file's metadata and stored source; `DocumentText` represents derived processing output. Keeping them separate means the existing `select(Document)`-based queries in `document_service.py` (`list_documents_for_user`, `get_document_for_user`, `get_document_file_for_user`) never risk silently loading large extracted text they don't need — SQLAlchemy's default column loading would pull *every* mapped column on `Document` on every one of those calls, so an `extracted_text` column there would have been a real, not hypothetical, performance cost on already-existing, already-live endpoints (`GET /documents` in particular). This was the deciding factor in Checkpoint 2's design review, evaluated against three candidate designs (column-on-Document, separate table, filesystem artifact) in a full comparison matrix.
 
 ### Storage
-**Local disk, fully operational, with persistent Docker storage.** Unchanged this checkpoint. `document_texts.content` lives in Postgres, not on disk — a deliberate choice (Checkpoint 2's Option C, a filesystem artifact, was evaluated and rejected specifically because it would reintroduce the two-resource-consistency problem Document Management CRUD Checkpoint 4 already had to solve carefully for binary-file deletion, now for a second resource on every write, not just delete).
+**Local disk, fully operational, with persistent Docker storage.** Unchanged this milestone. `document_chunks.content` lives in Postgres, same as `document_texts.content` — no filesystem artifact, for the same two-resource-consistency reasoning already established for extracted text.
 
 ### Deployment (planned, nothing live yet)
-Unchanged this checkpoint.
+Unchanged this milestone.
 
 ### Future microservices
-Unchanged this checkpoint — see prior sections.
+Unchanged this milestone — see prior sections.
 
 ---
 
@@ -281,15 +285,38 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 **No `relationship()`** on either `Document` or `DocumentText` — unchanged.
 
-**No `status`, `error`, `parser_version`, or versioning column** — unchanged. Presence/absence of a `document_texts` row remains the only signal for "has this been processed," now reachable via a real endpoint rather than only tests.
+**No `status`, `error`, `parser_version`, or versioning column** — unchanged. Presence/absence of a `document_texts` row remains the only signal for "has this been processed."
 
-**This checkpoint's verification:** the new `/process` endpoint was exercised end-to-end against real Postgres via the full test suite (11 new HTTP-level tests, all passing) — including a real reprocessing case (confirmed exactly one `DocumentText` row exists after calling `/process` twice, with `content` updated in place rather than duplicated) and a real missing-file case (the stored file removed from disk mid-test, confirmed the endpoint returns `500` and no `DocumentText` row is created). This is the first time the table has been written to via a real, authenticated HTTP request rather than only by a service-level test or a manual one-off run.
+**This milestone's verification (Checkpoint 5's own test count still holds):** the `/process` endpoint's existing HTTP-level tests were extended (not replaced) to also assert chunk persistence — all still passing.
+
+### `document_chunks` — new this milestone, migration `411324fb18f5_create_document_chunks_table`
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | UUID | primary key, default `uuid4()` (via `BaseModel`) |
+| `document_text_id` | UUID | FK → `document_texts.id`, `ON DELETE CASCADE`, indexed (not unique — one `DocumentText` has many chunks) |
+| `chunk_index` | INTEGER | not null — 0-based ordering within the document, in original document order |
+| `content` | TEXT | not null — a chunk's text |
+| `created_at` / `updated_at` | TIMESTAMPTZ | via `BaseModel` |
+
+**Composite `UniqueConstraint(document_text_id, chunk_index)`** — enforces "no two chunks claim the same position for the same text" at the database level, mirroring how `DocumentText.document_id` being `UNIQUE` enforces its own invariant structurally rather than by convention. Different `document_text_id`s may reuse the same `chunk_index` freely (verified by test).
+
+**No `relationship()`** on either `DocumentChunk` or `DocumentText` — same explicit-query pattern used everywhere else in this codebase.
+
+**No embedding/vector column, no pgvector type, no vector index** — deliberately deferred to whichever future milestone actually needs them; adding one now would be exactly the kind of speculative field this project has consistently avoided.
+
+**Belongs to `DocumentText`, not `Document`, and carries no redundant `document_id`** — see Section 3's architecture note for the full rationale (a chunk is derived from extracted text, not the source file; the FK chain `chunk → document_text → document` is the single path back to the parent, not duplicated).
+
+**Reprocessing behavior: delete-then-recreate, not update-in-place, not versioned.** Chunk *count* changes when content changes, so there's no stable 1:1 row correspondence to update against (unlike `DocumentText`'s single-row upsert). `chunk_service._replace_chunks()` deletes all existing chunks for a `document_text_id` and inserts the newly computed set — verified by test to leave zero stale rows and zero duplicates after a reprocess with materially different content.
+
+**Persisted atomically with `DocumentText`** — see Section 3's transaction-consistency note. `document_processing_service.process_document()` is the only code path that writes to this table outside of tests.
+
+**Verification:** `test_document_chunk_model.py` (7 tests: insert, many-chunks-per-text, composite-uniqueness rejection, cross-document-text uniqueness allowed, cascade delete from `DocumentText`, full cascade chain from `Document`, FK-integrity rejection) and `test_chunk_service.py` (14 tests: pure algorithm + `_replace_chunks()` persistence) all pass against real Postgres.
 
 ---
 
 ## 7. IMPLEMENTED FEATURES
 
-*(Tasks 1 through Document Text Extraction Checkpoint 4 — see prior syncs for full detail; summarized here, unchanged unless noted.)*
+*(Tasks 1 through Task 3C — see prior syncs for full detail; summarized here, unchanged unless noted.)*
 
 - **Task 1** — Project skeleton.
 - **Task 2.1** — Database foundation.
@@ -322,7 +349,7 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 **Verified beyond pytest:** the full backend test suite was run against a real, freshly-provisioned PostgreSQL 16 instance (not SQLite, not mocked) both **before** this checkpoint's changes (confirming the pre-existing 116-test baseline genuinely passes) and **after** (confirming 127 pass with zero regressions). `alembic current`, `alembic heads`, and `alembic check` were all run for real, confirming the migration head is unchanged and no new migration was generated. `git diff --stat`, `git diff --name-only`, and `git diff --check` were all run for real against the actual repository, confirming the exact, minimal change surface and no whitespace/formatting errors.
 
-**Not yet done, deliberately:** automatic upload parsing, any status/processing-state column, parser versioning, chunking, embeddings, pgvector usage, RAG, chat, background workers, Redis/Arq, OCR, a `GET` endpoint for extracted text, document detail page, PDF viewer/annotation, research-workspace UI, and deployment.
+**Not yet done, deliberately:** automatic upload parsing, any status/processing-state column, parser versioning, chunking, embeddings, pgvector usage, RAG, chat, background workers, Redis/Arq, OCR, a `GET` endpoint for extracted text, frontend work of any kind, and deployment.
 
 ### Task 3C: Frontend document management (this checkpoint)
 **What it does:** Builds the frontend document-management experience described in Section 2 (#13) on top of the existing, unmodified backend contract — a protected `/documents` route with list, upload, download, delete, and an explicit "Process" action. This was preceded by a dedicated design/scope-review turn (before any code was written) that inspected the actual frontend (framework, routing, styling, existing conventions, and — critically — the fact that `services/api.ts` had only `get`/`post` and no authenticated-request capability at all) and the actual backend contract, then defined the six-part scope (list, upload, download, delete, process, and the new route guard) and flagged two real open questions (401 handling, list-refresh strategy) for explicit decision before implementation.
@@ -347,6 +374,26 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 **Not yet done, deliberately:** document detail page, PDF viewer/annotation, chat, any research-workspace UI, any backend change of any kind, deployment.
 
+### Document Chunking (this milestone)
+**What it does:** Extends `POST /documents/{document_id}/process` to also split newly-extracted text into deterministic, ordered chunks and persist them (`document_chunks` table), atomically alongside the extracted-text write. This was preceded by two design-review turns before any code was written: a first pass covering the algorithm design, data model, reprocessing strategy, and API surface; a second, corrective pass (after review) that identified and fixed a real transaction-consistency gap in the first proposal (independent commits for text vs. chunks could leave a document with new text paired with stale chunks) and fully specified the previously-underspecified chunking algorithm boundary behavior. Both were explicitly approved before implementation began.
+
+**Key decisions:**
+- **Chunks belong to `DocumentText`, not `Document`, with no redundant `document_id` FK.** A chunk is derived from extracted text, not the source file — reprocessing regenerates chunks from new text, so the FK chain `chunk → document_text → document` is the single source of truth, avoiding a second, independently-driftable path.
+- **Atomic transaction boundary, the milestone's central fix.** `document_text_service.py` gained a private, non-committing `_upsert_document_text()`; the existing public `parse_and_store_document_text()` is now a thin wrapper around it (unchanged behavior, all 8 of its existing tests pass unmodified). `chunk_service.py` exposes only a private, non-committing `_replace_chunks()` — deliberately no public self-committing `chunk_and_store_document_text()`, since no real caller needs independent chunk persistence today (avoiding a speculative public API). A new `document_processing_service.process_document()` calls both private functions, then issues the single `db.commit()` — text and chunks become durable together or not at all. Verified by a dedicated test (`test_document_processing_service.py`) that forces a chunk-persistence failure after text has been staged and confirms the previously committed state (old text, old chunks, same row IDs) survives unchanged.
+- **Deterministic, character-count-based chunking algorithm — no tokenizer, no NLP library.** Paragraphs split on `"\n\n"` (the same marker `parse_service` already produces between pages); greedily combined up to `TARGET=1000` characters; a paragraph between `TARGET` and `MAX=1200` is kept whole; a paragraph over `MAX` is hard-split into `TARGET`-sized, `OVERLAP=150`-character-overlapping windows, each snapped backward up to `WHITESPACE_LOOKBACK=20` characters to the nearest whitespace to avoid mid-word cuts (falling back to a raw character cut if no whitespace is found within that lookback). Fully specified with worked examples during design review — no ambiguity left to implementation-time judgment calls.
+- **Reprocessing: delete-then-recreate, not update-in-place, not versioned.** Chunk count changes when content changes, so there's no stable row-to-row correspondence to update against (unlike `DocumentText`'s single-row upsert). Verified to leave zero stale rows and zero duplicates.
+- **No new endpoint.** Chunking was integrated into the existing `/process` endpoint rather than exposed as a separate operation — the endpoint's entire purpose is already "make this document's derived state current," and decoupling text-freshness from chunk-freshness would create a real risk of a client calling one without the other.
+- **Chunks are never exposed by any endpoint.** Same treatment as `DocumentText.content` (Section 11 #54) — internal processing state only.
+- **No embeddings, pgvector, vector search, RAG, chat, or frontend change** — all explicitly out of scope and confirmed untouched.
+
+**Files:** New — `backend/app/models/document_chunk.py`, `backend/alembic/versions/411324fb18f5_create_document_chunks_table.py`, `backend/app/services/chunk_service.py`, `backend/app/services/document_processing_service.py`, `backend/tests/test_chunk_service.py`, `backend/tests/test_document_chunk_model.py`, `backend/tests/test_document_processing_service.py`. Modified — `backend/app/models/__init__.py` (registers `DocumentChunk`), `backend/app/services/document_text_service.py` (extracts the non-committing `_upsert_document_text()` helper; public function's behavior unchanged), `backend/app/api/documents.py` (`/process` calls the new orchestrator instead of `document_text_service` directly), `backend/tests/test_document_process_api.py` (extended with chunk-persistence and chunk-absence assertions in existing tests, no new test functions needed there). **No frontend file, no other backend file, modified.**
+
+**Tests:** 26 new (14 in `test_chunk_service.py`, 7 in `test_document_chunk_model.py`, 5 in `test_document_processing_service.py`), plus extensions to 6 existing tests in `test_document_process_api.py`. **153 backend tests passing overall (127 pre-existing + 26 new), zero regressions** — including all 8 pre-existing `test_document_text_service.py` tests, confirming the `_upsert_document_text()` extraction didn't change that module's public contract.
+
+**Verified beyond pytest:** `alembic heads`/`alembic current` were checked against the actual repository *before* generating the migration (both `f5a18872f21b (head)`, matching the expected pre-milestone state) — not assumed from a stale sandbox snapshot. The autogenerated migration was hand-reviewed before applying (detected only the intended table + index, no drift). After applying: `alembic current`/`heads` both `411324fb18f5 (head)`, `alembic check` → "No new upgrade operations detected." `git diff`/`git status --short` confirmed the exact, minimal change surface with no unrelated file touched.
+
+**Not yet done, deliberately:** embeddings, pgvector, vector storage, semantic retrieval, RAG, single-document chat, background workers, Redis/Arq, OCR, any frontend chunk UI, any new public endpoint, any status/versioning column on chunks.
+
 ---
 
 ## 8. AUTHENTICATION FLOW
@@ -357,7 +404,7 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 ## 9. API ENDPOINTS
 
-**One route added this checkpoint.** `document_texts`' content is still not exposed via HTTP in any form — the new endpoint returns `DocumentResponse`, never `DocumentText`.
+**No route added or removed this milestone** — `/process`'s existing contract is extended in behavior (it now also persists chunks) but not in shape. `document_texts` and `document_chunks` content are both still not exposed via HTTP in any form — the endpoint returns `DocumentResponse`, never `DocumentText` or chunk data.
 
 | Method | Route | Purpose | Auth required? |
 |---|---|---|---|
@@ -369,9 +416,9 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 | GET | `/api/v1/documents/{document_id}` | Get one document's metadata | **Yes** |
 | GET | `/api/v1/documents/{document_id}/file` | Download the actual stored file | **Yes** |
 | DELETE | `/api/v1/documents/{document_id}` | Delete a document (file + DB row) | **Yes** |
-| POST | `/api/v1/documents/{document_id}/process` | Parse the document and persist extracted text; reprocesses in place if already processed | **Yes** |
+| POST | `/api/v1/documents/{document_id}/process` | Parse the document, persist extracted text and chunks (atomically); reprocesses (replacing both) if already processed | **Yes** |
 
-`docs/API.md` updated this checkpoint with the new endpoint's full contract (request, success response, all error responses).
+`docs/API.md` updated this milestone — the `/process` section now documents the atomic text+chunk persistence and chunk-replacement reprocessing behavior.
 
 ---
 
@@ -409,6 +456,20 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 61. **The process endpoint's success response is the existing `DocumentResponse`, at `200 OK` — never `DocumentText` or its `content`.** Compared explicitly against three alternatives in a dedicated design turn: returning full extracted text (rejected — directly contradicts Decision #54 and reintroduces the payload-size concern that justified keeping `extracted_text` off the `Document` model in the first place); a new, bespoke minimal response schema (rejected — unnecessary, since `DocumentResponse` already communicates everything a client needs and introducing a new schema for one endpoint adds a pattern the codebase doesn't otherwise have); and `204 No Content` (rejected — `204` fits a destroyed resource, like delete, better than a resource that still exists and changed state; returning its current representation is more informative at negligible cost).
 
+62. **Chunks live in a `document_chunks` table FK'd to `document_texts`, not `documents`, with no redundant `document_id` column.** A chunk is derived from extracted text, not the source file — when a document is reprocessed and `DocumentText.content` changes, chunks regenerate from that new content. A second FK straight to `Document` would be a derivable, independently-driftable redundant path; `chunk → document_text → document` is the single source of truth, matching the "no redundant FKs, explicit queries only" pattern already established throughout this codebase.
+
+63. **Composite `UniqueConstraint(document_text_id, chunk_index)`, not a standalone unique `chunk_index`.** Enforces "no two chunks claim the same position for the same text" at the database level while explicitly allowing different documents' texts to reuse the same `chunk_index` (verified by test) — the constraint is scoped to the pair, not either column alone.
+
+64. **Reprocessing strategy for chunks: delete-then-recreate, not update-in-place, not versioned.** Chosen over update-in-place because chunk *count* changes when content changes — there's no stable row-to-row correspondence to update against, unlike `DocumentText`'s single-row upsert (Decision #57). Versioning was considered and rejected as premature, for the same reason `DocumentText` itself isn't versioned (Decision #51) — no requirement for chunk history exists yet.
+
+65. **Text persistence and chunk persistence happen inside one transaction, not two independent commits — a corrective design revision.** The first proposal had each service commit independently; review correctly identified this as a real consistency gap (a chunk-persistence failure after a successful text commit could leave a document with new text paired with stale or missing chunks, with no error surfaced). Fixed by extracting a private, non-committing `_upsert_document_text()` from `document_text_service.py` (the existing public `parse_and_store_document_text()` becomes a thin wrapper, unchanged in behavior) and giving `chunk_service.py` only a private, non-committing `_replace_chunks()`. A new `document_processing_service.process_document()` composes both and issues the single commit. This relies on `app/db/session.py`'s existing `get_db` dependency's implicit rollback-on-exception (via `AsyncSession.close()`) — verified directly by a test that forces a mid-pipeline failure and confirms the prior committed state survives unchanged.
+
+66. **No public, self-committing `chunk_and_store_document_text()` in `chunk_service.py`.** Only `chunk_text()` (pure) and `_replace_chunks()` (non-committing) are exposed. A standalone public chunking entry point was deliberately not added, since no real caller needs independent chunk persistence today — `document_processing_service.process_document()` is chunking's only caller. Avoiding this speculative API surface was an explicit correction from the first design proposal.
+
+67. **Chunking algorithm is character-count-based, with a fully deterministic, worked-example-verified specification — no tokenizer or NLP dependency.** `TARGET=1000`, `MAX=1200`, `OVERLAP=150`, `WHITESPACE_LOOKBACK=20` characters. Paragraphs (split on `"\n\n"`, the same marker `parse_service` already produces) combine greedily up to `TARGET`; a paragraph between `TARGET` and `MAX` is kept whole, not split; a paragraph over `MAX` is hard-split into `TARGET`-sized, `OVERLAP`-overlapping windows, snapped backward up to `WHITESPACE_LOOKBACK` characters to the nearest whitespace to avoid mid-word cuts. No tokenizer dependency was introduced, consistent with this project's standing principle of not adding a technology before something downstream actually needs it — nothing today needs a token count, since no embedding model has been chosen.
+
+68. **Chunking integrates into the existing `/process` endpoint rather than a new endpoint.** The endpoint's purpose is already "make this document's derived state current" — a separate `/chunk` endpoint would let a client call one without the other, creating a real risk of a document with fresh text but stale chunks (or vice versa) that no response would ever indicate. `/process`'s request/response contract is unchanged; only its internal behavior extends.
+
 ---
 
 ## 12. CURRENT TASK STATUS
@@ -423,42 +484,45 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - Document Management CRUD Checkpoints 1–4 — List, detail, download, delete. **Complete.**
 - Post-CRUD architectural review (review-only).
 - Document Text Extraction Checkpoints 1–5 — parser, schema, parse-to-persist integration, explicit processing endpoint. **Complete.**
-- **Task 3C — Frontend document management. Complete.**
+- Task 3C — Frontend document management. **Complete.**
+- **Document Chunking — deterministic chunking algorithm, `document_chunks` table, atomic text+chunk persistence via a new orchestration service. Complete.**
 
-**Git state:** everything through Checkpoint 5 (backend) was already implemented and verified in this working tree; **this checkpoint (Task 3C) adds frontend-only changes on top of that same uncommitted working tree.** Still nothing has been committed or pushed — per this checkpoint's own instructions. `git status`, `git diff --stat`/`--name-only`/`--check` were run for real against the actual repository, confirming the exact combined change surface (Checkpoint 5's backend/doc changes plus this checkpoint's frontend changes).
+**Git state:** everything through Document Chunking was implemented and verified in this working tree, on top of the same still-uncommitted working tree carrying Checkpoint 5's backend changes and Task 3C's frontend changes. Nothing has been committed or pushed — per this milestone's own instructions. `alembic heads`/`alembic current` were checked against the real repository *before* generating the new migration (not assumed from a stale snapshot); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact combined change surface.
 
 **Not started at all:**
 - Automatic parsing on upload — deliberately not built; a confirmed design decision, not an oversight.
 - DOCX/TXT extraction.
-- Chunking, embeddings, pgvector usage, similarity search.
+- Embeddings, pgvector usage, vector similarity search.
 - Background worker, Redis, Arq.
-- Any status/processing-state column, parser versioning.
-- Everything related to chat.
+- Any status/processing-state column, parser or chunk versioning.
+- Everything related to RAG and chat.
 - Document detail page, PDF viewer/annotation, any research-workspace UI.
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None. Task 3C is complete and fully verified for its approved, deliberately narrow scope — document management only, no research-intelligence UI of any kind.
+**Partially completed work:** None. Document Chunking is complete and fully verified for its approved, deliberately narrow scope — deterministic chunk generation and atomic persistence only, no embeddings, no retrieval, no frontend surface.
 
 ---
 
 ## 13. NEXT TASK
 
-**Task 3C is now complete.** The next task is genuinely open and not yet designed — candidates, per the roadmap's remaining phases, include: DOCX/TXT text extraction (`parse_service` is currently PDF-only by deliberate Checkpoint 1 scoping), beginning the chunking/embeddings work that RAG will depend on, or a first deployment pass. None of these has been discussed, designed, or approved — this section intentionally does not recommend one over the others, since no design-review conversation has happened yet for whichever comes next.
+**Document Chunking is now complete.** The next task is genuinely open and not yet designed — candidates, per the roadmap's remaining phases, include: embeddings generation (the natural next consumer of `document_chunks`), DOCX/TXT text extraction (`parse_service` is currently PDF-only by deliberate Checkpoint 1 scoping), or a first deployment pass. None of these has been discussed, designed, or approved — this section intentionally does not recommend one over the others, since no design-review conversation has happened yet for whichever comes next.
 
-**Confirmed decisions from Checkpoints 2–5 and Task 3C (do not re-litigate without a new reason):**
-- Separate `document_texts` table, not a `Document` column.
-- 1:0..1 via a unique constraint, no versioning.
-- No status column, no `relationship()`.
-- Dedicated `document_text_service.py`, not folded into `document_service.py`.
-- Upsert (update-in-place), not reject-on-duplicate or delete-and-recreate.
-- The integration function accepts an authorized `Document`, performs no authorization itself.
-- Processing is triggered by an explicit endpoint, not automatically on upload.
-- The process endpoint returns `DocumentResponse`, never `DocumentText` or extracted text.
+**Confirmed decisions from Checkpoints 2–5, Task 3C, and Document Chunking (do not re-litigate without a new reason):**
+- Separate `document_texts` table, not a `Document` column; separate `document_chunks` table, FK'd to `document_texts`, not `documents`.
+- 1:0..1 (`DocumentText`) / 1:many (`DocumentChunk`) via constraints, no versioning on either.
+- No status column, no `relationship()` anywhere.
+- Dedicated `document_text_service.py`, `chunk_service.py`, and `document_processing_service.py` — each a focused file, not folded together.
+- `DocumentText` uses upsert (update-in-place); `DocumentChunk` uses delete-then-recreate — different strategies, each justified by whether a stable row correspondence exists.
+- Text persistence and chunk persistence happen in **one transaction**, via `document_processing_service.process_document()` — not two independent commits.
+- No public, self-committing chunking API — only `chunk_text()` (pure) and the internal `_replace_chunks()` exist; avoid adding a speculative public entry point without a real second caller.
+- The chunking algorithm is character-count-based and fully deterministic — no tokenizer/NLP dependency added.
+- Processing (and now chunking) is triggered by the existing explicit `/process` endpoint, not automatically on upload, and not via a new endpoint.
+- The process endpoint returns `DocumentResponse`, never `DocumentText`, extracted text, or chunk data.
 - No document detail page — list rows already show everything `DocumentResponse` provides.
 - No persisted "processed" status anywhere, frontend or backend — the backend doesn't track one.
 - A `401` from any authenticated frontend call triggers logout + redirect to `/login`.
-- No HTTP client library, form library, or CSS framework introduced on the frontend — everything extends the existing hand-rolled `fetch` + inline-styles pattern.
+- No HTTP client library, form library, CSS framework, or tokenizer/NLP dependency introduced anywhere in this project so far.
 
 ---
 
@@ -471,7 +535,8 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
   - **Document Management CRUD ✅ done** (list, detail, download, delete).
   - **Document Text Extraction Checkpoints 1–5 ✅ done** — parser, schema, parse-to-persist integration, explicit processing endpoint (`POST /documents/{document_id}/process`); upload remains unmodified.
   - **Task 3C (frontend document management) ✅ done** — protected `/documents` route; list, upload, download, delete, and an explicit "Process" action, all on the existing backend contract with zero backend changes.
-  - Chunking, embeddings, pgvector, RAG, chat — not started.
+  - **Document Chunking ✅ done** — `document_chunks` table, deterministic chunking algorithm, atomic text+chunk persistence via `document_processing_service.py`; no new endpoint, no frontend change.
+  - Embeddings, pgvector, vector retrieval, RAG, chat — not started.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.
 - **Phase 3:** Notes, highlights, tags; GROBID metadata extraction.
@@ -555,3 +620,14 @@ See Section 12.
 - **A document detail page (Task 3C)** — rejected because `DocumentResponse`'s four fields already fit in a list row; a dedicated route would be an empty page.
 - **A persisted "processing status" badge on the frontend (Task 3C)** — rejected because the backend has no status field to back it; showing one would fabricate state the server doesn't track.
 - **Parsing `Content-Disposition` for the download filename (Task 3C)** — rejected in favor of using the already-known `original_filename` client-side, avoiding an otherwise-necessary backend CORS `expose_headers` change that would have been an unapproved backend modification.
+
+**Document Chunking is the first time a design review's own first proposal was corrected in a second round before implementation — worth recognizing that pattern as healthy, not a failure.** The initial chunking design proposed two independent commits (text, then chunks); a careful second review correctly identified this as a real consistency bug (a chunk-persistence failure after a successful text commit could silently leave a document with new text paired with stale chunks) and required a redesign before any code was written. The fix — extracting non-committing private helpers from each service and introducing a new orchestration layer (`document_processing_service.py`) to own the single transaction — was itself verified, not just reasoned about: a dedicated test forces the exact failure mode and confirms the prior committed state survives. Worth treating "does this genuinely commit atomically, or does it just look atomic because failures are rare in testing" as a standing question for any future multi-table write in this codebase, not just this one.
+
+**A concrete technique worth reusing for future "prove atomicity" needs:** rather than trusting reasoning about transaction boundaries, `test_document_processing_service.py` established a known-good committed baseline, then deliberately made a downstream write fail (via a targeted `monkeypatch` on a pure function — explicitly not mocking the database or either service's real persistence logic) and asserted the previously committed rows survive completely unchanged after a rollback. This is a stronger check than asserting "no exception propagates incorrectly" and is worth repeating anywhere else in this codebase a similar multi-write atomicity guarantee is ever claimed.
+
+**Rejected ideas worth remembering so they aren't re-proposed as if new** *(further addition):*
+- **Two independent commits for text and chunk persistence (Document Chunking, first proposal)** — rejected after review identified the real inconsistency risk; superseded by the single-transaction `document_processing_service.process_document()` design (Decision #65).
+- **A public, self-committing `chunk_and_store_document_text()` (Document Chunking, first proposal)** — rejected as a speculative API surface with no real second caller; only `chunk_text()` (pure) and the private `_replace_chunks()` exist (Decision #66).
+- **A tokenizer/NLP dependency for chunk sizing** — rejected in favor of a character-count-based algorithm; nothing downstream needs a token count yet, since no embedding model has been chosen.
+- **A separate `/chunk` endpoint, decoupled from `/process`** — rejected because it would let a client call one without the other, creating exactly the kind of stale-derived-state risk the transaction fix was designed to prevent (Decision #68).
+- **Character-offset columns on `DocumentChunk`** — considered and not added; nothing currently consumes them, and the project's own principle (#4 in the operating instructions) is not to add fields merely because they might be useful later.

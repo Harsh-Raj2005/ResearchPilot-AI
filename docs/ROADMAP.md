@@ -22,12 +22,12 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Checkpoint 2 — Storage service (local disk, UUID filenames, extension validation)
   - [x] Checkpoint 3 — Document upload API (`get_current_user`'s first real consumer)
   - [x] Checkpoint 4 — Housekeeping (env, .gitignore, docker-compose volume, docs)
-- [x] Document Management CRUD — **complete**
-  - [x] Upload — `POST /api/v1/documents/upload`
+- [ ] Document list/detail/download/delete — not scheduled to a task yet
   - [x] List — `GET /api/v1/documents`, paginated, own documents only
   - [x] Detail — `GET /api/v1/documents/{document_id}`, 404 for not-owned/nonexistent (indistinguishable)
   - [x] Download — `GET /api/v1/documents/{document_id}/file`, same ownership isolation, streamed via FastAPI FileResponse
-  - [x] Delete — `DELETE /api/v1/documents/{document_id}`, file deleted before DB row (see PROJECT\_CONTEXT.md for ordering rationale)
+  - [x] Delete — `DELETE /api/v1/documents/{document_id}`, file deleted before DB row (see PROJECT_CONTEXT.md for ordering rationale)
+- [x] Document Management CRUD — **complete** (upload, list, detail, download, delete)
 - [x] Document Text Extraction
   - [x] Checkpoint 1 — Standalone PDF parse service (`app/services/parse_service.py`), not wired into upload
   - [x] Checkpoint 2 — Schema/storage design reviewed and approved (separate `document_texts` table, 1:0..1)
@@ -35,7 +35,7 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Checkpoint 4 — Parse -> persist integration (`document_text_service.py`, not wired into upload)
   - [x] Checkpoint 5 — Explicit processing endpoint (`POST /documents/{document_id}/process`), decided over automatic upload wiring; upload remains unchanged; reprocessing supported via the existing upsert behavior
 - [x] Document Text Extraction — **complete** (parse service, `document_texts` schema, parse-to-persist integration, explicit processing endpoint — upload itself still does not auto-parse, by design)
-- [x] Task 3C — Document management (frontend) — **complete**
+- [x] Task 3C — Document management (frontend)
   - [x] Protected `/documents` route (unauthenticated visitors redirected to `/login`)
   - [x] Document list, paginated (`skip`/`limit`, "Load more")
   - [x] Upload
@@ -43,3 +43,9 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Delete
   - [x] Explicit "Process" action, wired to `POST /documents/{document_id}/process`
   - No PDF viewer, chat, or research-workspace UI — those remain out of scope
+- [x] Document Chunking
+  - [x] `document_chunks` table (FK'd to `document_texts`, composite `UNIQUE(document_text_id, chunk_index)`)
+  - [x] `chunk_service.py` — deterministic, character-based chunking algorithm (paragraph-aware, target 1000 / max 1200 / overlap 150 chars), no tokenizer/NLP dependency
+  - [x] `document_processing_service.py` — new orchestration boundary; `/process` now persists `DocumentText` and `DocumentChunk` atomically in one transaction
+  - [x] Chunks remain fully internal — no new endpoint, no frontend change, never exposed by any response
+  - No embeddings, pgvector, vector search, RAG, or chat — those remain later, separate milestones

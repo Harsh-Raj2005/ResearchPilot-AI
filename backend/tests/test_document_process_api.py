@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.models.document_chunk import DocumentChunk
 from app.models.document_text import DocumentText
 
 
@@ -100,6 +101,16 @@ async def test_process_document_success(client: AsyncClient, db_session: AsyncSe
     document_text = result.scalar_one()
     assert document_text.content == "Hello, ResearchPilot."
 
+    # Chunks are also persisted in the same request (Document Chunking
+    # milestone) — never exposed in the response, but real rows exist.
+    chunk_result = await db_session.execute(
+        select(DocumentChunk).where(DocumentChunk.document_text_id == document_text.id)
+    )
+    chunks = chunk_result.scalars().all()
+    assert len(chunks) == 1
+    assert chunks[0].content == "Hello, ResearchPilot."
+    assert chunks[0].chunk_index == 0
+
 
 # --- 2. Reprocessing an already-processed document ---
 
@@ -124,6 +135,14 @@ async def test_process_document_reprocessing_updates_in_place(
     rows = result.scalars().all()
     assert len(rows) == 1
     assert rows[0].content == "First version"
+
+    # Chunks are replaced (not duplicated) on reprocessing too.
+    chunk_result = await db_session.execute(
+        select(DocumentChunk).where(DocumentChunk.document_text_id == rows[0].id)
+    )
+    chunks = chunk_result.scalars().all()
+    assert len(chunks) == 1
+    assert chunks[0].content == "First version"
 
 
 # --- 3. Nonexistent document ---
@@ -163,6 +182,9 @@ async def test_process_document_wrong_owner_returns_404_no_leak(
         select(DocumentText).where(DocumentText.document_id == uuid.UUID(document_id))
     )
     assert result.scalar_one_or_none() is None
+    # No chunks either, since no DocumentText was ever created.
+    chunk_result = await db_session.execute(select(DocumentChunk))
+    assert chunk_result.scalars().first() is None
 
 
 # --- 5. Unsupported format ---
@@ -193,6 +215,8 @@ async def test_process_document_unsupported_format_returns_422(
         select(DocumentText).where(DocumentText.document_id == uuid.UUID(document_id))
     )
     assert result.scalar_one_or_none() is None
+    chunk_result = await db_session.execute(select(DocumentChunk))
+    assert chunk_result.scalars().first() is None
 
 
 # --- 6. Corrupted/invalid PDF ---
@@ -213,6 +237,8 @@ async def test_process_document_corrupted_pdf_returns_422(
         select(DocumentText).where(DocumentText.document_id == uuid.UUID(document_id))
     )
     assert result.scalar_one_or_none() is None
+    chunk_result = await db_session.execute(select(DocumentChunk))
+    assert chunk_result.scalars().first() is None
 
 
 # --- 7. Missing stored file ---
@@ -242,6 +268,8 @@ async def test_process_document_missing_stored_file_returns_500(
         select(DocumentText).where(DocumentText.document_id == uuid.UUID(document_id))
     )
     assert result.scalar_one_or_none() is None
+    chunk_result = await db_session.execute(select(DocumentChunk))
+    assert chunk_result.scalars().first() is None
 
 
 # --- 8. Authentication ---
@@ -286,3 +314,4 @@ async def test_process_document_response_excludes_internal_fields(client: AsyncC
     assert "extracted_text" not in body
     assert "storage_path" not in body
     assert "stored_filename" not in body
+    assert "chunks" not in body

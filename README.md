@@ -32,9 +32,17 @@ frontend now has a protected `/documents` route (unauthenticated
 visitors are redirected to `/login`) with a full document list,
 upload, download, delete, and an explicit "Process" action wired to
 the endpoint above — all built on the existing backend contract with
-no new backend routes. Chunking, embeddings, RAG, and chat are not
-implemented. See `docs/PROJECT_CONTEXT.md` for full current state and
-`CHANGELOG.md` for the task-by-task history.
+no new backend routes.
+
+**`/process` now also chunks extracted text.** After parsing, text is
+split into deterministic, ordered chunks (`document_chunks` table)
+and persisted atomically alongside the extracted-text row — both
+succeed together or neither is durably changed. Chunks remain
+entirely internal processing state, same as extracted text: no
+endpoint exposes them, and no frontend UI shows them. Embeddings,
+pgvector, semantic search, RAG, and chat are not implemented. See
+`docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
+for the task-by-task history.
 
 ## Stack
 

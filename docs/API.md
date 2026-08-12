@@ -158,7 +158,7 @@ Delete a document owned by the current user — removes both the stored file and
 _This completes the full Document Management CRUD surface (upload, list, detail, download, delete)._
 
 ### `POST /documents/{document_id}/process`
-Parse a document owned by the current user and persist the extracted text (Document Text Extraction Checkpoint 5). This is an **explicit, on-demand operation** — upload does **not** automatically trigger it.
+Parse a document owned by the current user, persist the extracted text, and split it into ordered chunks (Document Text Extraction Checkpoint 5; chunk persistence added by the Document Chunking milestone). This is an **explicit, on-demand operation** — upload does **not** automatically trigger it.
 
 **Path parameter:** `document_id` (UUID)
 
@@ -172,9 +172,11 @@ Parse a document owned by the current user and persist the extracted text (Docum
   "created_at": "2026-01-01T00:00:00Z"
 }
 ```
-The response is the same `DocumentResponse` shape used by upload/list/detail — it **never** includes the extracted text (`DocumentText.content`) or any internal storage field. Extracted text remains internal processing state, not something any current endpoint serves back to the client.
+The response is the same `DocumentResponse` shape used by upload/list/detail — it **never** includes the extracted text (`DocumentText.content`), the resulting chunks, or any internal storage field. Extracted text and chunks remain internal processing state, not something any current endpoint serves back to the client.
 
-Calling this endpoint again for an already-processed document **reprocesses** it — the underlying service upserts (updates the existing extracted-text row in place) rather than creating a duplicate. There is no separate reprocess endpoint; this one endpoint serves both purposes.
+Text extraction and chunking happen together, atomically: both the extracted-text row and the resulting chunk rows are persisted in a single transaction. If chunk persistence were to fail after text had been parsed, nothing durably changes — the previously committed extracted text and chunks (if any) are left exactly as they were.
+
+Calling this endpoint again for an already-processed document **reprocesses** it — the extracted-text row is updated in place, and all of its chunks are deleted and recreated from the new text (not updated in place, since chunk count can change between reprocessings). There is no separate reprocess endpoint; this one endpoint serves both purposes.
 
 **Response `401`** — missing or invalid token
 **Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical behavior to detail/download/delete — indistinguishable from a nonexistent ID.

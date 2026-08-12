@@ -33,7 +33,7 @@ from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.document import DocumentResponse
-from app.services import document_service, document_text_service, parse_service, storage_service
+from app.services import document_processing_service, document_service, parse_service, storage_service
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -235,9 +235,12 @@ async def process_document(
     PROJECT_CONTEXT.md Section 11 #54).
 
     Calling this endpoint again for an already-processed document is
-    how reprocessing works — parse_and_store_document_text() already
-    upserts (update-in-place), so no separate reprocess mechanism or
-    duplicate-prevention logic is needed here.
+    how reprocessing works — DocumentText and DocumentChunk rows are
+    both replaced (via document_processing_service.process_document(),
+    which upserts DocumentText and deletes+recreates DocumentChunk
+    rows) inside one transaction, so no separate reprocess mechanism
+    or duplicate-prevention logic is needed here, and a document never
+    ends up with new text paired with stale chunks.
 
     Error mapping, mirroring this file's existing exception-translation
     style (see upload/download above):
@@ -259,7 +262,7 @@ async def process_document(
         )
 
     try:
-        await document_text_service.parse_and_store_document_text(db, document=document)
+        await document_processing_service.process_document(db, document=document)
     except (parse_service.UnsupportedFormatError, parse_service.ParseError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
