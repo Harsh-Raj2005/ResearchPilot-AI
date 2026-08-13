@@ -1042,3 +1042,66 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   columns, automatic retries, and a provider abstraction layer all
   remain entirely unimplemented — this milestone adds deterministic
   embedding generation and atomic persistence only.
+
+### Vector Retrieval
+- Added `backend/app/services/retrieval_service.py` —
+  `retrieve_similar_chunks(db, *, document, query_embedding, top_k)`,
+  the first real consumer of `document_chunks.embedding`. Performs a
+  pgvector cosine-distance similarity search
+  (`DocumentChunk.embedding.cosine_distance(...)`) scoped to a single,
+  already-authorized `Document`, joining through `DocumentText` (the
+  only path from a `Document` to its chunks, since `DocumentChunk` has
+  no direct `document_id`). Returns a small `RetrievedChunk` dataclass
+  (`id`, `chunk_index`, `content`, `distance`) — no Pydantic schema,
+  since nothing here crosses an HTTP boundary.
+- **Internal-only — no new public endpoint.** `retrieval_service` is a
+  service-layer primitive with no current HTTP caller, ready for a
+  future RAG/chat layer to consume; matches this project's standing
+  "no speculative public API" principle.
+- **Zero authorization logic of its own.** Accepts an already-
+  authorized `Document`, mirroring the exact pattern already
+  established by `document_text_service.parse_and_store_document_text()`
+  — the caller is responsible for obtaining the `Document` via
+  `document_service.get_document_for_user()` first. Document isolation
+  is enforced structurally by the join/filter, not by an ownership
+  check inside this module.
+- Extended `backend/app/services/embedding_service.py` with
+  `embed_query(text: str) -> list[float]` — a thin wrapper around the
+  existing `embed_texts()` (a query is just one text; no second call
+  path to the provider, no duplicated batching/error-translation
+  logic). `embed_texts()` itself is unchanged.
+- `top_k` is clamped to `[1, MAX_TOP_K=20]` rather than trusted as-is
+  — a caller-supplied `0`, negative, or unreasonably large value is
+  silently corrected rather than raising, since this is an internal
+  primitive with no request-validation boundary yet.
+- **No new migration, no vector index.** `document_chunks.embedding`
+  already exists (from the prior milestone); Alembic head unchanged
+  at `368647c4431f`. An ANN index (HNSW/IVFFlat) solves a Phase 2+
+  (cross-document, large-scale) retrieval problem that doesn't exist
+  yet at Phase 1's single-document scale — confirmed still correct,
+  not revisited.
+- Added `backend/tests/test_retrieval_service.py` — 8 new tests, all
+  against real Postgres/pgvector with deterministic, hand-constructed
+  unit-vector embeddings (never real OpenAI output): similarity
+  ordering (closest-first, verified by exact cosine-distance values —
+  identical vectors → distance ≈0.0, orthogonal vectors → distance
+  ≈1.0), `top_k` respected, pathological `top_k` (zero, huge) clamped
+  safely, document isolation (two documents with identical embeddings
+  never leak into each other's results), empty result for a document
+  with zero chunks, full result-shape verification (id/chunk_index/
+  content/distance all correct), and confirmation that retrieval never
+  calls `embedding_service` (and therefore never the OpenAI SDK)
+  itself.
+- Extended `backend/tests/test_embedding_service.py` with 2 new tests
+  for `embed_query()` — correct single-text/model/dimensions request,
+  and provider-failure translation to the existing
+  `EmbeddingProviderError`. No real OpenAI API call, same mocking
+  convention as every other test in this file.
+- **179 backend tests passing overall (169 pre-existing + 10 new),
+  zero regressions.** `alembic current`/`heads` unchanged at
+  `368647c4431f (head)`; `alembic check` — "No new upgrade operations
+  detected" (confirming no schema drift was introduced).
+- No frontend change, no new endpoint, no RAG, no chat, no vector
+  index, no Redis/background worker, no provider abstraction —
+  all confirmed still out of scope and unimplemented. This milestone
+  adds a tested, internal similarity-search building block only.

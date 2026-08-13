@@ -49,9 +49,16 @@ Processing is synchronous — no background worker, no Redis. Chunks
 and embeddings remain entirely internal processing state, same as
 extracted text: no endpoint exposes them, and no frontend UI shows
 them. No vector index exists yet (deferred until multi-document
-retrieval actually needs one). Semantic search, retrieval, RAG, and
-chat are not implemented. See `docs/PROJECT_CONTEXT.md` for full
-current state and `CHANGELOG.md` for the task-by-task history.
+retrieval actually needs one).
+
+**A new internal `retrieval_service.retrieve_similar_chunks()`
+primitive can now perform pgvector cosine-distance similarity search**
+over a single, already-authorized document's chunks — the first real
+consumer of the stored embeddings. It's not exposed via any HTTP
+endpoint yet; it exists as a tested building block for a future
+RAG/chat layer. RAG and chat themselves are not implemented. See
+`docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
+for the task-by-task history.
 
 ## Stack
 

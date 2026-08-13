@@ -158,3 +158,31 @@ async def test_embed_texts_empty_input_returns_empty_list_no_call(monkeypatch):
     result = await embedding_service.embed_texts([])
 
     assert result == []
+
+
+# --- 8. embed_query() — single-text convenience wrapper ---
+
+
+async def test_embed_query_returns_single_vector_with_correct_text_model_dimensions(monkeypatch):
+    fake_data = [_FakeEmbeddingItem(embedding=[0.5, 0.6], index=0)]
+    fake_client = _FakeClient(data=fake_data)
+    _patch_client(monkeypatch, fake_client)
+
+    result = await embedding_service.embed_query("what does the paper conclude?")
+
+    assert result == [0.5, 0.6]
+    assert fake_client.embeddings.calls[0]["input"] == ["what does the paper conclude?"]
+    assert fake_client.embeddings.calls[0]["model"] == embedding_service.settings.embedding_model
+    assert (
+        fake_client.embeddings.calls[0]["dimensions"]
+        == embedding_service.settings.embedding_dimensions
+    )
+
+
+async def test_embed_query_provider_failure_becomes_embedding_provider_error(monkeypatch):
+    api_error = openai.APIError("server error", request=SimpleNamespace(), body=None)
+    fake_client = _FakeClient(error=api_error)
+    _patch_client(monkeypatch, fake_client)
+
+    with pytest.raises(embedding_service.EmbeddingProviderError):
+        await embedding_service.embed_query("some query")

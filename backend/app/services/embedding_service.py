@@ -97,3 +97,17 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
         )
 
     return embeddings
+
+
+async def embed_query(text: str) -> list[float]:
+    """
+    Returns a single embedding vector for one query string.
+
+    A thin convenience wrapper around embed_texts() — a query is just
+    one text, so this reuses the exact same batching/error-translation
+    logic rather than duplicating it or introducing a second call path
+    to the provider. Raises EmbeddingProviderError under the same
+    conditions embed_texts() does; see that function's docstring.
+    """
+    embeddings = await embed_texts([text])
+    return embeddings[0]

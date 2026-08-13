@@ -56,3 +56,15 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] No vector index yet, no Redis/background worker, no automatic retries, no embedding metadata columns
   - [x] All provider calls mocked in tests — no real OpenAI API call in the test suite
   - No semantic search, retrieval, RAG, or chat — those remain later, separate milestones
+- [x] Vector Retrieval
+  - [x] `retrieval_service.py` — internal-only `retrieve_similar_chunks()` primitive, pgvector cosine-distance search scoped to an already-authorized `Document`
+  - [x] `embedding_service.py` extended with `embed_query()`, a thin single-text wrapper around the existing `embed_texts()`
+  - [x] No new endpoint, no new migration, no vector index — deliberately deferred
+  - [x] Document isolation enforced by construction (join through `DocumentText.document_id`, no cross-document leakage possible)
+  - [x] All provider calls mocked in tests — deterministic unit-vector fixtures, no real OpenAI API call
+
+NEXT (not yet approved/designed):
+- RAG (retrieval + prompt assembly + LLM call)
+- Single-document chat
+- Vector index (HNSW/IVFFlat) — once multi-document/large-scale retrieval genuinely needs one
+- Multi-document search (Phase 2)

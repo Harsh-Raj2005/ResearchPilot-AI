@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), and Document Chunking are all fully complete. **This milestone (Document Chunks → Embeddings) adds the first real AI-provider dependency**: `POST /api/v1/documents/{document_id}/process` now also generates an OpenAI `text-embedding-3-small` embedding for each chunk and persists it on `document_chunks.embedding` (pgvector, 1536 dimensions) — atomically alongside the extracted text and chunks, inside the same transaction. One new service (`embedding_service.py`), one modified model column, one new migration, no new endpoint, no frontend change. Embeddings remain entirely internal processing state, same treatment as extracted text and chunks before them. Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), Document Chunking, and Document Chunks → Embeddings are all fully complete. **This milestone (Vector Retrieval) is the first real consumer of `document_chunks.embedding`** — a new internal-only `retrieval_service.retrieve_similar_chunks()` primitive performs pgvector cosine-distance similarity search over a single, already-authorized document's chunks. No new endpoint, no new migration, no vector index, no frontend change. RAG and chat — the layers that will actually call this primitive — remain unimplemented. Nothing has been deployed yet.
 
 ---
 
@@ -538,21 +538,23 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - Task 3C — Frontend document management. **Complete.**
 - Document Chunking — deterministic chunking algorithm, `document_chunks` table, atomic text+chunk persistence via a new orchestration service. **Complete.**
 - **Document Chunks → Embeddings — OpenAI `text-embedding-3-small` embeddings generated and persisted atomically alongside text and chunks, via the same orchestration service extended. Complete.**
+- **Vector Retrieval — internal `retrieval_service.retrieve_similar_chunks()` primitive; pgvector cosine-distance search scoped to a single, authorized document; `embedding_service.embed_query()` added for single-text embedding. Complete.**
 
-**Git state:** everything through this milestone was implemented and verified in this working tree, on top of the same still-uncommitted working tree carrying Checkpoint 5's backend changes, Task 3C's frontend changes, and Document Chunking. Nothing has been committed or pushed — per this milestone's own instructions. `alembic heads`/`alembic current` were checked against the real repository *before* generating the new migration (not assumed from a stale snapshot); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact combined change surface.
+**Git state:** everything through this milestone was implemented on top of the real, committed `b346022` (`feat: add document chunk embeddings`, branch `embeddings-work`). This milestone's changes remain uncommitted, per its own instructions. `alembic current`/`heads`/`check` were re-verified (unchanged — no schema change this milestone); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact change surface.
 
 **Not started at all:**
 - Automatic parsing on upload — deliberately not built; a confirmed design decision, not an oversight.
 - DOCX/TXT extraction.
-- Vector similarity search, retrieval, RAG, single-document chat.
-- Vector index (HNSW/IVFFlat).
+- RAG (retrieval + prompt assembly + LLM call), single-document chat.
+- Vector index (HNSW/IVFFlat) — deferred until multi-document/large-scale retrieval genuinely needs one.
 - Background worker, Redis, Arq.
 - Any status/processing-state column, parser/chunk/embedding versioning.
+- Any retrieval-related public HTTP endpoint — `retrieval_service` is internal-only, with no current caller beyond its own tests; a future RAG/chat layer is the intended consumer.
 - Document detail page, PDF viewer/annotation, any research-workspace UI.
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None. Document Chunks → Embeddings is complete and fully verified for its approved, deliberately narrow scope — embedding generation and atomic persistence only, no retrieval, no similarity search, no frontend surface.
+**Partially completed work:** None. Vector Retrieval is complete and fully verified for its approved, deliberately narrow scope — similarity search over one document's own chunks only, no RAG, no chat, no new endpoint, no frontend surface.
 
 ---
 
