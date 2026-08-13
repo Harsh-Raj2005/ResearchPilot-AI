@@ -158,7 +158,7 @@ Delete a document owned by the current user — removes both the stored file and
 _This completes the full Document Management CRUD surface (upload, list, detail, download, delete)._
 
 ### `POST /documents/{document_id}/process`
-Parse a document owned by the current user, persist the extracted text, and split it into ordered chunks (Document Text Extraction Checkpoint 5; chunk persistence added by the Document Chunking milestone). This is an **explicit, on-demand operation** — upload does **not** automatically trigger it.
+Parse a document owned by the current user, persist the extracted text, split it into ordered chunks, and generate an embedding for each chunk (Document Text Extraction Checkpoint 5; chunk persistence added by the Document Chunking milestone; embeddings added by the Document Chunks → Embeddings milestone). This is an **explicit, on-demand operation** — upload does **not** automatically trigger it.
 
 **Path parameter:** `document_id` (UUID)
 
@@ -172,15 +172,16 @@ Parse a document owned by the current user, persist the extracted text, and spli
   "created_at": "2026-01-01T00:00:00Z"
 }
 ```
-The response is the same `DocumentResponse` shape used by upload/list/detail — it **never** includes the extracted text (`DocumentText.content`), the resulting chunks, or any internal storage field. Extracted text and chunks remain internal processing state, not something any current endpoint serves back to the client.
+The response is the same `DocumentResponse` shape used by upload/list/detail — it **never** includes the extracted text (`DocumentText.content`), the resulting chunks, or their embeddings. Extracted text, chunks, and embeddings all remain internal processing state, not something any current endpoint serves back to the client.
 
-Text extraction and chunking happen together, atomically: both the extracted-text row and the resulting chunk rows are persisted in a single transaction. If chunk persistence were to fail after text had been parsed, nothing durably changes — the previously committed extracted text and chunks (if any) are left exactly as they were.
+Text extraction, chunking, and embedding generation all happen together, atomically: the extracted-text row, the chunk rows, and their embeddings are persisted in a single transaction. Embeddings are generated via OpenAI `text-embedding-3-small` (1536 dimensions), synchronously, before that transaction commits. If the embedding provider fails (or any earlier step fails), nothing durably changes — the previously committed extracted text, chunks, and embeddings (if any) are left exactly as they were. A document with empty extracted text produces zero chunks and makes no embedding request at all.
 
-Calling this endpoint again for an already-processed document **reprocesses** it — the extracted-text row is updated in place, and all of its chunks are deleted and recreated from the new text (not updated in place, since chunk count can change between reprocessings). There is no separate reprocess endpoint; this one endpoint serves both purposes.
+Calling this endpoint again for an already-processed document **reprocesses** it — the extracted-text row is updated in place, and all of its chunks (with fresh embeddings) are deleted and recreated from the new text (not updated in place, since chunk count can change between reprocessings). The previous chunks/embeddings are only deleted once the new embeddings have already been generated successfully, so a reprocessing attempt whose embedding call fails never destroys the prior, still-valid state. There is no separate reprocess endpoint; this one endpoint serves both purposes.
 
 **Response `401`** — missing or invalid token
 **Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical behavior to detail/download/delete — indistinguishable from a nonexistent ID.
 **Response `422`** — `document_id` is not a valid UUID, *or* the document's stored file has an unsupported format for parsing (currently PDF-only), *or* the file exists but is corrupted/invalid and cannot be parsed.
 **Response `500`** — the document row exists and is owned by the caller, but its stored file is missing from disk (a server-side data-integrity problem, not a client error — identical in spirit to download's `500` for the same condition).
+**Response `502`** — the embedding provider failed (network error, timeout, API error, or an unexpected/malformed response). The response body is a generic message only — no raw provider error text, response body, or API key ever reaches the client.
 
 _Document parsing is now available on demand via this endpoint. Chunking, embeddings, RAG, and chat are not implemented — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._

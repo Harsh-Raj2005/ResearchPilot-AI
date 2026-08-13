@@ -37,12 +37,21 @@ no new backend routes.
 **`/process` now also chunks extracted text.** After parsing, text is
 split into deterministic, ordered chunks (`document_chunks` table)
 and persisted atomically alongside the extracted-text row — both
-succeed together or neither is durably changed. Chunks remain
-entirely internal processing state, same as extracted text: no
-endpoint exposes them, and no frontend UI shows them. Embeddings,
-pgvector, semantic search, RAG, and chat are not implemented. See
-`docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
-for the task-by-task history.
+succeed together or neither is durably changed.
+
+**`/process` now also generates embeddings for each chunk.** Every
+chunk's text is embedded via OpenAI `text-embedding-3-small` (1536
+dimensions) and persisted on `document_chunks.embedding` (pgvector),
+still inside the same atomic transaction as the extracted text and
+chunks — a document's text, chunks, and embeddings all become durable
+together or not at all, even if the embedding provider fails.
+Processing is synchronous — no background worker, no Redis. Chunks
+and embeddings remain entirely internal processing state, same as
+extracted text: no endpoint exposes them, and no frontend UI shows
+them. No vector index exists yet (deferred until multi-document
+retrieval actually needs one). Semantic search, retrieval, RAG, and
+chat are not implemented. See `docs/PROJECT_CONTEXT.md` for full
+current state and `CHANGELOG.md` for the task-by-task history.
 
 ## Stack
 

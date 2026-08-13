@@ -8,19 +8,28 @@ parse_service.py's decoupling philosophy: chunk_text() is a pure
 function, completely independent of FastAPI, HTTP, SQLAlchemy, or any
 model, so it's testable in total isolation and reusable anywhere.
 
-No embeddings, no vector columns, no tokenizer/NLP dependency — see
-chunk_text()'s own docstring for the exact deterministic algorithm.
-Those remain a later, separate milestone's decision, not assumed
-here.
-
 Deliberately exposes only chunk_text() (pure) and _replace_chunks()
 (persistence primitive, no commit) as its public surface — no
 standalone self-committing chunk_and_store_document_text() exists,
 since no real caller needs independent chunk persistence today; the
 only caller is document_processing_service.process_document(), which
-owns the single commit spanning both text and chunk persistence. See
-PROJECT_CONTEXT.md for the full rationale (avoiding a speculative
-public API with no real second caller).
+owns the single commit spanning both text, chunk, and embedding
+persistence. See PROJECT_CONTEXT.md for the full rationale (avoiding
+a speculative public API with no real second caller).
+
+Document Chunks -> Embeddings milestone: chunk_text() itself is
+UNCHANGED — the deterministic splitting algorithm is not touched by
+this milestone. _replace_chunks() changes, though: it no longer calls
+chunk_text() internally. Instead it accepts already-computed chunk
+texts AND their already-computed embeddings, constructing every
+DocumentChunk with both set at ORM-object-construction time, before
+any flush. This is required because DocumentChunk.embedding is
+NOT NULL — Postgres enforces that at flush/INSERT time, so a chunk
+row can never be flushed (even transiently, mid-transaction) without
+its embedding already attached. The caller
+(document_processing_service.process_document()) is responsible for
+calling chunk_text() and embedding_service.embed_texts() itself,
+before calling this function.
 """
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -143,28 +152,57 @@ def _hard_split(paragraph: str) -> list[str]:
 
 
 async def _replace_chunks(
-    db: AsyncSession, *, document_text: DocumentText
+    db: AsyncSession,
+    *,
+    document_text: DocumentText,
+    chunk_texts: list[str],
+    embeddings: list[list[float]],
 ) -> list[DocumentChunk]:
     """
-    Deletes any existing chunks for `document_text` and inserts the
-    newly computed ones — flush only, no commit. Reprocessing
-    strategy: delete-then-recreate (not update-in-place), since chunk
-    *count* changes when content changes and there's no stable 1:1
-    row correspondence to update against. Deliberately not committed
-    here: the caller (document_processing_service.process_document())
-    owns the single transaction spanning both this and the
-    DocumentText upsert, so text and chunks become durable together
-    or not at all.
+    Deletes any existing chunks for `document_text` and inserts new
+    ones built from the given `chunk_texts`/`embeddings` — flush
+    only, no commit. Reprocessing strategy: delete-then-recreate (not
+    update-in-place), since chunk *count* changes when content
+    changes and there's no stable 1:1 row correspondence to update
+    against.
+
+    `chunk_texts` and `embeddings` must already be the same length,
+    in the same order — the caller (document_processing_service) is
+    responsible for having produced them together (chunk_text(), then
+    embedding_service.embed_texts() on that exact list). This
+    function raises ValueError on a mismatch rather than silently
+    zipping a short list, since that would mean pairing the wrong
+    embedding with the wrong chunk — a correctness bug, not a
+    provider/runtime failure, so it isn't wrapped in
+    EmbeddingProviderError.
+
+    Deliberately not committed here: the caller
+    (document_processing_service.process_document()) owns the single
+    transaction spanning DocumentText, DocumentChunk, and embedding
+    persistence together, so all of it becomes durable together or
+    not at all. Every constructed DocumentChunk already has its
+    `embedding` set before this function's own flush — required,
+    since the column is NOT NULL and Postgres enforces that at
+    flush/INSERT time, not just at commit.
     """
-    pieces = chunk_text(document_text.content)
+    if len(chunk_texts) != len(embeddings):
+        raise ValueError(
+            f"chunk_texts and embeddings must be the same length "
+            f"(got {len(chunk_texts)} texts and {len(embeddings)} embeddings)"
+        )
 
     await db.execute(
         delete(DocumentChunk).where(DocumentChunk.document_text_id == document_text.id)
     )
 
     chunks = [
-        DocumentChunk(document_text_id=document_text.id, chunk_index=index, content=piece)
-        for index, piece in enumerate(pieces)
+        DocumentChunk(
+            document_text_id=document_text.id,
+            chunk_index=index,
+            content=text,
+            embedding=embedding,
+        )
+        for index, (text, embedding) in enumerate(zip(chunk_texts, embeddings))
     ]
     db.add_all(chunks)
     await db.flush()

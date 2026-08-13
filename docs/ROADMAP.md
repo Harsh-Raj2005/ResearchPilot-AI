@@ -49,3 +49,10 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] `document_processing_service.py` — new orchestration boundary; `/process` now persists `DocumentText` and `DocumentChunk` atomically in one transaction
   - [x] Chunks remain fully internal — no new endpoint, no frontend change, never exposed by any response
   - No embeddings, pgvector, vector search, RAG, or chat — those remain later, separate milestones
+- [x] Document Chunks -> Embeddings
+  - [x] `document_chunks.embedding` column (`Vector(1536)`, `NOT NULL`, OpenAI `text-embedding-3-small`)
+  - [x] `embedding_service.py` — encapsulates the OpenAI async SDK, single `embed_texts()` function, no provider abstraction
+  - [x] `document_processing_service.py` extended: embeddings generated synchronously inside `/process`, before the single commit, so text/chunks/embeddings stay atomic together
+  - [x] No vector index yet, no Redis/background worker, no automatic retries, no embedding metadata columns
+  - [x] All provider calls mocked in tests — no real OpenAI API call in the test suite
+  - No semantic search, retrieval, RAG, or chat — those remain later, separate milestones

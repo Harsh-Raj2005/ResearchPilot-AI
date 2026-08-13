@@ -5,6 +5,11 @@ Document Chunking milestone scope: model/database-level only — no
 HTTP, no service layer, no chunking algorithm. Mirrors
 test_document_text_model.py's style exactly: reuses the existing
 db_session fixture, no new test infrastructure.
+
+Document Chunks -> Embeddings milestone: DocumentChunk.embedding is
+now NOT NULL, so every DocumentChunk construction in this file
+supplies one. New tests cover the embedding column specifically:
+valid storage/retrieval, dimensionality, and NOT NULL enforcement.
 """
 import uuid
 
@@ -14,9 +19,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
-from app.models.document_chunk import DocumentChunk
+from app.models.document_chunk import EMBEDDING_DIMENSIONS, DocumentChunk
 from app.models.document_text import DocumentText
 from app.services import auth_service
+
+_SAMPLE_EMBEDDING = [0.1] * EMBEDDING_DIMENSIONS
 
 
 async def _make_user(db_session: AsyncSession, suffix: str):
@@ -60,7 +67,12 @@ async def test_document_chunk_can_be_inserted_and_retrieved(db_session: AsyncSes
     document = await _make_document(db_session, user.id)
     document_text = await _make_document_text(db_session, document.id)
 
-    chunk = DocumentChunk(document_text_id=document_text.id, chunk_index=0, content="Chunk one.")
+    chunk = DocumentChunk(
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="Chunk one.",
+        embedding=_SAMPLE_EMBEDDING,
+    )
     db_session.add(chunk)
     await db_session.commit()
     await db_session.refresh(chunk)
@@ -86,7 +98,12 @@ async def test_document_text_can_have_many_chunks(db_session: AsyncSession):
 
     for index in range(3):
         db_session.add(
-            DocumentChunk(document_text_id=document_text.id, chunk_index=index, content=f"Chunk {index}.")
+            DocumentChunk(
+                document_text_id=document_text.id,
+                chunk_index=index,
+                content=f"Chunk {index}.",
+                embedding=_SAMPLE_EMBEDDING,
+            )
         )
     await db_session.commit()
 
@@ -106,12 +123,20 @@ async def test_document_chunk_index_must_be_unique_per_document_text(db_session:
     document = await _make_document(db_session, user.id)
     document_text = await _make_document_text(db_session, document.id)
 
-    first = DocumentChunk(document_text_id=document_text.id, chunk_index=0, content="First.")
+    first = DocumentChunk(
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="First.",
+        embedding=_SAMPLE_EMBEDDING,
+    )
     db_session.add(first)
     await db_session.commit()
 
     duplicate_index = DocumentChunk(
-        document_text_id=document_text.id, chunk_index=0, content="Duplicate index."
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="Duplicate index.",
+        embedding=_SAMPLE_EMBEDDING,
     )
     db_session.add(duplicate_index)
     with pytest.raises(IntegrityError):
@@ -133,8 +158,22 @@ async def test_same_chunk_index_is_allowed_across_different_document_texts(
     text_a = await _make_document_text(db_session, document_a.id)
     text_b = await _make_document_text(db_session, document_b.id)
 
-    db_session.add(DocumentChunk(document_text_id=text_a.id, chunk_index=0, content="A chunk 0."))
-    db_session.add(DocumentChunk(document_text_id=text_b.id, chunk_index=0, content="B chunk 0."))
+    db_session.add(
+        DocumentChunk(
+            document_text_id=text_a.id,
+            chunk_index=0,
+            content="A chunk 0.",
+            embedding=_SAMPLE_EMBEDDING,
+        )
+    )
+    db_session.add(
+        DocumentChunk(
+            document_text_id=text_b.id,
+            chunk_index=0,
+            content="B chunk 0.",
+            embedding=_SAMPLE_EMBEDDING,
+        )
+    )
     await db_session.commit()  # must not raise
 
 
@@ -146,7 +185,12 @@ async def test_deleting_document_text_cascades_to_its_chunks(db_session: AsyncSe
     document = await _make_document(db_session, user.id)
     document_text = await _make_document_text(db_session, document.id)
 
-    chunk = DocumentChunk(document_text_id=document_text.id, chunk_index=0, content="Will cascade.")
+    chunk = DocumentChunk(
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="Will cascade.",
+        embedding=_SAMPLE_EMBEDDING,
+    )
     db_session.add(chunk)
     await db_session.commit()
     chunk_id = chunk.id
@@ -167,7 +211,12 @@ async def test_deleting_document_cascades_through_document_text_to_chunks(
     document = await _make_document(db_session, user.id)
     document_text = await _make_document_text(db_session, document.id)
 
-    chunk = DocumentChunk(document_text_id=document_text.id, chunk_index=0, content="Full chain.")
+    chunk = DocumentChunk(
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="Full chain.",
+        embedding=_SAMPLE_EMBEDDING,
+    )
     db_session.add(chunk)
     await db_session.commit()
     chunk_id = chunk.id
@@ -188,7 +237,61 @@ async def test_document_chunk_requires_a_real_document_text(db_session: AsyncSes
     enforced by the real FK constraint against the real Postgres test
     database, same as test_document_text_model.py's equivalent test.
     """
-    chunk = DocumentChunk(document_text_id=uuid.uuid4(), chunk_index=0, content="Orphan attempt.")
+    chunk = DocumentChunk(
+        document_text_id=uuid.uuid4(),
+        chunk_index=0,
+        content="Orphan attempt.",
+        embedding=_SAMPLE_EMBEDDING,
+    )
+    db_session.add(chunk)
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+# --- Test 6: embedding column — valid storage/retrieval and dimensionality ---
+
+
+async def test_document_chunk_embedding_persists_and_retrieves_correctly(
+    db_session: AsyncSession,
+):
+    user = await _make_user(db_session, "embedstore")
+    document = await _make_document(db_session, user.id)
+    document_text = await _make_document_text(db_session, document.id)
+
+    embedding = [float(i) / 1000 for i in range(EMBEDDING_DIMENSIONS)]
+    chunk = DocumentChunk(
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="Embedded chunk.",
+        embedding=embedding,
+    )
+    db_session.add(chunk)
+    await db_session.commit()
+    await db_session.refresh(chunk)
+
+    result = await db_session.execute(select(DocumentChunk).where(DocumentChunk.id == chunk.id))
+    fetched = result.scalar_one()
+
+    assert len(fetched.embedding) == EMBEDDING_DIMENSIONS
+    # pgvector round-trips as floats; compare with a small tolerance
+    # rather than exact equality to avoid float-precision flakiness.
+    assert all(abs(a - b) < 1e-6 for a, b in zip(fetched.embedding, embedding))
+
+
+# --- Test 7: embedding is NOT NULL ---
+
+
+async def test_document_chunk_embedding_is_not_nullable(db_session: AsyncSession):
+    user = await _make_user(db_session, "notnull")
+    document = await _make_document(db_session, user.id)
+    document_text = await _make_document_text(db_session, document.id)
+
+    # Deliberately omit `embedding` — the column has no Python-side
+    # default, so this must fail at the database level (NOT NULL),
+    # confirmed against real Postgres, not just asserted by the type
+    # annotation.
+    chunk = DocumentChunk(document_text_id=document_text.id, chunk_index=0, content="No embedding.")
     db_session.add(chunk)
     with pytest.raises(IntegrityError):
         await db_session.commit()

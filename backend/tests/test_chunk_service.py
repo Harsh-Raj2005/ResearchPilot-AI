@@ -129,6 +129,17 @@ def test_chunk_text_chunk_index_assignment_is_caller_responsibility():
 
 # --- DB-level _replace_chunks() tests ---
 
+_SAMPLE_EMBEDDING_DIM = 1536
+
+
+def _fake_embeddings(count: int) -> list[list[float]]:
+    """Deterministic, distinguishable fake embeddings for testing —
+    never a real embedding, and no OpenAI call is ever made by these
+    tests (_replace_chunks() takes embeddings as a plain argument, so
+    it has no knowledge of or dependency on embedding_service at
+    all)."""
+    return [[float(i)] * _SAMPLE_EMBEDDING_DIM for i in range(count)]
+
 
 async def _make_user(db_session: AsyncSession, suffix: str):
     return await auth_service.create_user(
@@ -173,8 +184,14 @@ async def test_replace_chunks_persists_expected_rows(db_session: AsyncSession):
     document_text = await _make_document_text(
         db_session, "Paragraph one.\n\nParagraph two."
     )
+    chunk_texts = chunk_service.chunk_text(document_text.content)
 
-    chunks = await chunk_service._replace_chunks(db_session, document_text=document_text)
+    chunks = await chunk_service._replace_chunks(
+        db_session,
+        document_text=document_text,
+        chunk_texts=chunk_texts,
+        embeddings=_fake_embeddings(len(chunk_texts)),
+    )
     await db_session.commit()
 
     assert len(chunks) == 1  # short paragraphs combine into one chunk
@@ -193,17 +210,67 @@ async def test_replace_chunks_assigns_sequential_chunk_index(db_session: AsyncSe
     p1 = "Alpha. " * 90
     p2 = "Beta. " * 100
     document_text = await _make_document_text(db_session, f"{p1}\n\n{p2}")
+    chunk_texts = chunk_service.chunk_text(document_text.content)
 
-    chunks = await chunk_service._replace_chunks(db_session, document_text=document_text)
+    chunks = await chunk_service._replace_chunks(
+        db_session,
+        document_text=document_text,
+        chunk_texts=chunk_texts,
+        embeddings=_fake_embeddings(len(chunk_texts)),
+    )
     await db_session.commit()
 
     assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
 
+async def test_replace_chunks_each_chunk_receives_its_corresponding_embedding(
+    db_session: AsyncSession,
+):
+    p1 = "Alpha. " * 90
+    p2 = "Beta. " * 100
+    document_text = await _make_document_text(db_session, f"{p1}\n\n{p2}")
+    chunk_texts = chunk_service.chunk_text(document_text.content)
+    embeddings = _fake_embeddings(len(chunk_texts))
+
+    chunks = await chunk_service._replace_chunks(
+        db_session,
+        document_text=document_text,
+        chunk_texts=chunk_texts,
+        embeddings=embeddings,
+    )
+    await db_session.commit()
+
+    # Each chunk's embedding matches the embedding at its own index —
+    # not shuffled, not shared, not the wrong one paired up.
+    for chunk, expected_embedding in zip(chunks, embeddings):
+        assert list(chunk.embedding) == pytest.approx(expected_embedding)
+
+
+async def test_replace_chunks_rejects_mismatched_chunk_and_embedding_counts(
+    db_session: AsyncSession,
+):
+    document_text = await _make_document_text(db_session, "One paragraph only.")
+    chunk_texts = chunk_service.chunk_text(document_text.content)
+
+    with pytest.raises(ValueError):
+        await chunk_service._replace_chunks(
+            db_session,
+            document_text=document_text,
+            chunk_texts=chunk_texts,
+            embeddings=_fake_embeddings(len(chunk_texts) + 1),  # deliberately mismatched
+        )
+
+
 async def test_replace_chunks_empty_text_persists_zero_rows(db_session: AsyncSession):
     document_text = await _make_document_text(db_session, "")
+    chunk_texts = chunk_service.chunk_text(document_text.content)
 
-    chunks = await chunk_service._replace_chunks(db_session, document_text=document_text)
+    chunks = await chunk_service._replace_chunks(
+        db_session,
+        document_text=document_text,
+        chunk_texts=chunk_texts,
+        embeddings=_fake_embeddings(len(chunk_texts)),
+    )
     await db_session.commit()
 
     assert chunks == []
@@ -217,16 +284,28 @@ async def test_replace_chunks_reprocessing_removes_stale_rows_no_duplicates(
     db_session: AsyncSession,
 ):
     document_text = await _make_document_text(db_session, "Original short paragraph.")
+    first_texts = chunk_service.chunk_text(document_text.content)
 
-    first_chunks = await chunk_service._replace_chunks(db_session, document_text=document_text)
+    first_chunks = await chunk_service._replace_chunks(
+        db_session,
+        document_text=document_text,
+        chunk_texts=first_texts,
+        embeddings=_fake_embeddings(len(first_texts)),
+    )
     await db_session.commit()
     assert len(first_chunks) == 1
 
     # Simulate reprocessing with different (longer) content.
     document_text.content = "\n\n".join(["Paragraph."] * 3)
     await db_session.flush()
+    second_texts = chunk_service.chunk_text(document_text.content)
 
-    second_chunks = await chunk_service._replace_chunks(db_session, document_text=document_text)
+    second_chunks = await chunk_service._replace_chunks(
+        db_session,
+        document_text=document_text,
+        chunk_texts=second_texts,
+        embeddings=_fake_embeddings(len(second_texts)),
+    )
     await db_session.commit()
 
     result = await db_session.execute(
@@ -238,3 +317,29 @@ async def test_replace_chunks_reprocessing_removes_stale_rows_no_duplicates(
     assert len(persisted) == len(second_chunks)
     assert {c.id for c in persisted} == {c.id for c in second_chunks}
     assert first_chunks[0].id not in {c.id for c in persisted}
+
+
+async def test_replace_chunks_does_not_commit_independently(db_session: AsyncSession):
+    """
+    _replace_chunks() must only flush, never commit — the caller
+    (document_processing_service) owns the transaction boundary. If
+    this function committed on its own, rolling back afterward
+    wouldn't undo the insert; this test proves rollback still removes
+    everything, confirming no independent commit happened.
+    """
+    document_text = await _make_document_text(db_session, "Rollback check.")
+    chunk_texts = chunk_service.chunk_text(document_text.content)
+
+    await chunk_service._replace_chunks(
+        db_session,
+        document_text=document_text,
+        chunk_texts=chunk_texts,
+        embeddings=_fake_embeddings(len(chunk_texts)),
+    )
+    # Deliberately roll back instead of committing.
+    await db_session.rollback()
+
+    result = await db_session.execute(
+        select(DocumentChunk).where(DocumentChunk.document_text_id == document_text.id)
+    )
+    assert result.scalars().all() == []

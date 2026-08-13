@@ -47,6 +47,16 @@ class Settings(BaseSettings):
     # belongs to the layer that first reads it.
     max_upload_size_mb: int = 20
 
+    # --- Embeddings (Document Chunks -> Embeddings milestone) ---
+    # OpenAI is the only provider; encapsulated entirely inside
+    # embedding_service.py. No default for the API key — every real
+    # environment must set it explicitly; tests never read this value
+    # since the embedding service boundary is always mocked (see
+    # tests/test_embedding_service.py and friends).
+    openai_api_key: str = ""
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

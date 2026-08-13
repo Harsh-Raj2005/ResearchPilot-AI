@@ -18,13 +18,32 @@ model's own docstring).
 One DocumentText -> zero or many DocumentChunk rows (unlike
 DocumentText's own strict 1:0..1 relationship to Document). Zero
 chunks is a valid, expected state for empty extracted text.
+
+Document Chunks -> Embeddings milestone: adds `embedding`
+(Vector(1536), OpenAI text-embedding-3-small's default dimensionality)
+as a NOT NULL column. This is deliberately NOT nullable: the
+processing pipeline computes every chunk's embedding *before*
+constructing its DocumentChunk row (see chunk_service._replace_chunks
+and document_processing_service.process_document), so a DocumentChunk
+never exists — not even transiently, mid-transaction — without a
+valid embedding. NOT NULL lets the database itself enforce that
+invariant rather than relying on application discipline alone. No
+vector index yet (deferred to whichever future milestone actually
+needs multi-document/large-scale retrieval — premature at Phase 1's
+single-document scale) and no embedding metadata (model/version/
+status/embedded_at) — only one provider/model is in use, and a future
+model change is a deliberate future migration, not designed
+speculatively now.
 """
 import uuid
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import ForeignKey, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import BaseModel
+
+EMBEDDING_DIMENSIONS = 1536
 
 
 class DocumentChunk(BaseModel):
@@ -54,10 +73,15 @@ class DocumentChunk(BaseModel):
     # order. Assigned by chunk_service.chunk_text()'s emission order.
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # A chunk's text content. No embedding/vector columns — those
-    # belong to a later, separate milestone (see chunk_service.py's
-    # own docstring for the full rationale).
+    # A chunk's text content.
     content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # OpenAI text-embedding-3-small, 1536 dimensions, NOT NULL — see
+    # this module's own docstring for why nullable=False is safe and
+    # correct given the processing order.
+    embedding: Mapped[list[float]] = mapped_column(
+        Vector(EMBEDDING_DIMENSIONS), nullable=False
+    )
 
     def __repr__(self) -> str:
         return (

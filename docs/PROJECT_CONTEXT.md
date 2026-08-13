@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), and Task 3C (frontend document management) are all fully complete. **This milestone (Document Chunking) adds the first consumer of persisted extracted text**: `POST /api/v1/documents/{document_id}/process` now also splits the extracted text into deterministic, ordered chunks and persists them atomically alongside the text — one new table (`document_chunks`), two new backend services (`chunk_service.py`, `document_processing_service.py`), no new endpoint, no frontend change. Chunks remain entirely internal processing state, same treatment as extracted text before them. Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), and Document Chunking are all fully complete. **This milestone (Document Chunks → Embeddings) adds the first real AI-provider dependency**: `POST /api/v1/documents/{document_id}/process` now also generates an OpenAI `text-embedding-3-small` embedding for each chunk and persists it on `document_chunks.embedding` (pgvector, 1536 dimensions) — atomically alongside the extracted text and chunks, inside the same transaction. One new service (`embedding_service.py`), one modified model column, one new migration, no new endpoint, no frontend change. Embeddings remain entirely internal processing state, same treatment as extracted text and chunks before them. Nothing has been deployed yet.
 
 ---
 
@@ -146,31 +146,35 @@ Log out and back in ──► document and chat history still there
 ## 3. CURRENT ARCHITECTURE
 
 ### Backend
-**FastAPI (Python, async).** This milestone adds two new service files (`chunk_service.py`, `document_processing_service.py`), one modified service (`document_text_service.py`, extended not rewritten), one new model (`DocumentChunk`), and one new migration. No new route, no route-level contract change — `/process`'s request/response shape is identical.
+**FastAPI (Python, async).** This milestone adds one new service (`embedding_service.py`), modifies `chunk_service.py`'s persistence primitive and `document_processing_service.py`'s orchestration, adds one column to `DocumentChunk`, and one new migration. No new route, no route-level contract change — `/process`'s request/response shape is identical; only its internal behavior extends.
 
 ### Frontend
-**React + TypeScript + Vite.** Untouched this milestone — chunks are internal processing state with no frontend surface, same treatment as extracted text.
+**React + TypeScript + Vite.** Untouched this milestone — embeddings are internal processing state with no frontend surface, same treatment as extracted text and chunks.
 
 ### Database
-**PostgreSQL**, `pgvector`. **Four tables: `users`, `documents`, `document_texts`, `document_chunks`** (new this milestone). Four migrations total.
+**PostgreSQL**, `pgvector` (now genuinely used, not just installed). **Four tables: `users`, `documents`, `document_texts`, `document_chunks`.** Five migrations total. `document_chunks.embedding` is a `vector(1536)` column, `NOT NULL`.
 
 ### Authentication
 Unchanged this milestone.
 
 ### AI pipeline
-**Extraction and chunking are now both real and connected**: `parse_service` (Checkpoint 1) → `document_texts` persistence (Checkpoints 3–4) → **`document_chunks` persistence (this milestone)**, all triggered by the single authenticated `POST /documents/{document_id}/process` call (Checkpoint 5). A new orchestration layer, `document_processing_service.process_document()`, composes the text-upsert and chunk-replace operations **inside one transaction** — this is the milestone's central architectural addition, not just "one more service." Embeddings, vector storage, retrieval, and RAG remain entirely unimplemented; pgvector is installed but unused. Design per the Phase 1 doc: PyMuPDF for extraction (implemented), a dedicated persistence table for text (implemented), a dedicated persistence table for chunks (implemented, this milestone), hand-rolled RAG (no LangChain/LlamaIndex) — chunking is deliberately character-count-based with no tokenizer/NLP dependency, since nothing downstream yet needs token counts.
+**Extraction, chunking, and embedding are now all real and connected**: `parse_service` (Checkpoint 1) → `document_texts` persistence (Checkpoints 3–4) → `document_chunks` persistence (Document Chunking) → **embedding generation and persistence (this milestone)**, all triggered by the single authenticated `POST /documents/{document_id}/process` call (Checkpoint 5). `document_processing_service.process_document()` — the orchestration layer introduced by the Document Chunking milestone — now composes text-upsert, chunking, embedding generation, and chunk-replace-with-embedding **inside the same single transaction**, extending its existing atomicity guarantee one step further rather than weakening it. Vector storage/retrieval and RAG remain entirely unimplemented — `pgvector`'s `vector` type is now genuinely stored in the database, but nothing queries it yet (no similarity search, no vector index). Design per the Phase 1 doc: PyMuPDF for extraction (implemented), a dedicated persistence table for text (implemented), a dedicated persistence table for chunks (implemented), OpenAI `text-embedding-3-small` for embeddings (implemented, this milestone), hand-rolled RAG (no LangChain/LlamaIndex) — no provider abstraction layer, since there is exactly one provider and one real caller.
 
-**Why chunks live in their own table, FK'd to `DocumentText` rather than `Document` — the central architectural decision of this milestone:** a chunk is derived from *extracted text*, not from the source file directly — when a document is reprocessed and `DocumentText.content` changes, chunks regenerate from that new content. Tying the FK to `document_text_id` (rather than also carrying a redundant `document_id`) avoids a second, independently-driftable path back to the parent document; `chunk → document_text → document` is the single source of truth, mirroring the "no redundant FKs, explicit queries only" pattern already established by `DocumentText` itself.
+**Why embeddings are generated synchronously inside `/process`, not via a background worker or separate endpoint:** Phase 1 is intentionally synchronous end-to-end — introducing Redis/Arq now would be exactly the kind of speculative infrastructure this project has consistently deferred ("until something is demonstrably too slow synchronously," per the project's own established principle). A separate embedding endpoint was also rejected: decoupling "has current chunks" from "has current embeddings" reopens the same stale-derived-state risk chunking's own integration into `/process` was designed to close.
 
-**Why text persistence and chunk persistence had to become one transaction, not two independent commits:** the original design (each service committing independently) had a real consistency gap — a chunk-persistence failure after a successful text commit could leave a document with *new* extracted text paired with *stale or missing* chunks, silently wrong state no endpoint would ever surface as an error. The fix: `document_text_service.py` gained a new private, non-committing `_upsert_document_text()` (the existing public `parse_and_store_document_text()` is now a thin wrapper around it, unchanged in behavior); `chunk_service.py` exposes only a private, non-committing `_replace_chunks()` (no public self-committing chunk API exists, since no real caller needs one); `document_processing_service.process_document()` calls both, then issues the single `db.commit()`. This relies on `app/db/session.py`'s existing `get_db` dependency (`async with AsyncSessionLocal() as session:`) — SQLAlchemy's `AsyncSession.close()`, called automatically on any exception propagating out of a route handler, implicitly rolls back uncommitted work, so a chunk-persistence failure after a flushed-but-uncommitted text change leaves the database exactly as it was before the request. Verified directly, not just reasoned about: `test_document_processing_service.py` forces this exact failure and asserts the prior committed state survives unchanged.
+**Why `DocumentChunk.embedding` is `NOT NULL`, and what that required changing:** the whole point of this milestone's atomicity guarantee is that a committed chunk should never exist without its embedding — `NOT NULL` lets Postgres itself enforce that, rather than relying on application discipline alone. Since Postgres enforces `NOT NULL` at flush/INSERT time (not just commit), this required restructuring the processing order: `chunk_service._replace_chunks()` no longer computes chunk text internally — it now accepts already-computed `chunk_texts` and their already-computed `embeddings` as arguments, constructing every `DocumentChunk` with its embedding already set *before* that function's own flush. `document_processing_service.process_document()` is responsible for calling `chunk_service.chunk_text()` (unchanged, pure) and `embedding_service.embed_texts()` (in that order) before ever calling `_replace_chunks()`. This also protects reprocessing: because `_replace_chunks()` is only called after `embed_texts()` has already succeeded, an embedding failure during reprocessing can never destroy the previous, still-valid chunk set — the delete-old-chunks step is unreachable until new embeddings are already in hand. Verified directly, not just reasoned about: `test_document_processing_service.py`'s `test_process_document_embedding_failure_during_reprocessing_leaves_previous_state_intact` forces this exact failure and asserts the prior committed state (same row IDs, same content, same embedding values) survives completely unchanged.
+
+**Why `embedding_service.py` is a single function with no provider abstraction:** mirrors `parse_service.py`/`storage_service.py`'s existing "wrap one external capability behind a small, focused module" shape. No `EmbeddingProvider` interface, no strategy pattern, no registry — there is exactly one provider (OpenAI) and exactly one real caller (`document_processing_service.process_document()`), so an abstraction layer would have no second implementation or second caller to justify it, per this project's standing "no speculative abstraction" principle.
+
+**Why chunks live in their own table, FK'd to `DocumentText` rather than `Document` — the central architectural decision of the Document Chunking milestone:** a chunk is derived from *extracted text*, not from the source file directly — when a document is reprocessed and `DocumentText.content` changes, chunks regenerate from that new content. Tying the FK to `document_text_id` (rather than also carrying a redundant `document_id`) avoids a second, independently-driftable path back to the parent document; `chunk → document_text → document` is the single source of truth, mirroring the "no redundant FKs, explicit queries only" pattern already established by `DocumentText` itself.
 
 **Why `document_texts` is a separate table, not a column on `Document` — the central architectural decision of Checkpoints 2 and 3:** `Document` represents the file's metadata and stored source; `DocumentText` represents derived processing output. Keeping them separate means the existing `select(Document)`-based queries in `document_service.py` (`list_documents_for_user`, `get_document_for_user`, `get_document_file_for_user`) never risk silently loading large extracted text they don't need — SQLAlchemy's default column loading would pull *every* mapped column on `Document` on every one of those calls, so an `extracted_text` column there would have been a real, not hypothetical, performance cost on already-existing, already-live endpoints (`GET /documents` in particular). This was the deciding factor in Checkpoint 2's design review, evaluated against three candidate designs (column-on-Document, separate table, filesystem artifact) in a full comparison matrix.
 
 ### Storage
-**Local disk, fully operational, with persistent Docker storage.** Unchanged this milestone. `document_chunks.content` lives in Postgres, same as `document_texts.content` — no filesystem artifact, for the same two-resource-consistency reasoning already established for extracted text.
+**Local disk, fully operational, with persistent Docker storage.** Unchanged this milestone. `document_chunks.content` and `.embedding` both live in Postgres, same as `document_texts.content` — no filesystem artifact, for the same two-resource-consistency reasoning already established for extracted text.
 
 ### Deployment (planned, nothing live yet)
-Unchanged this milestone.
+Unchanged this milestone. **New operational requirement:** a real `OPENAI_API_KEY` must be set in any environment that calls `/process` — there is no default, and the app will fail at the embedding step (translated to a `502`) without one configured.
 
 ### Future microservices
 Unchanged this milestone — see prior sections.
@@ -194,8 +198,10 @@ pyjwt>=2.8.0
 email-validator>=2.1.0
 python-multipart>=0.0.9
 pymupdf>=1.24.0
+openai>=1.0.0
+pgvector>=0.2.0
 ```
-**No new backend dependency this checkpoint.**
+**Two new backend dependencies this milestone:** `openai` (the official async SDK, encapsulated entirely inside `embedding_service.py` — no other module imports it) and `pgvector` (SQLAlchemy's `Vector` column type, used only by `DocumentChunk.embedding`). No HTTP client, no NLP/tokenizer library, no vector-database client — both additions are narrowly scoped to exactly what this milestone needs.
 
 ### Frontend (from `frontend/package.json`)
 ```
@@ -203,19 +209,25 @@ react ^19.2.8
 react-dom ^19.2.8
 react-router-dom ^7.18.2
 ```
-**No new dependency this checkpoint** — the new authenticated fetch helpers, protected route, and documents page all use what was already installed (native `fetch`/`FormData`/`Blob`, existing `react-router-dom` primitives). No HTTP client library, no form library, no CSS framework was added.
+**No new dependency this milestone** — untouched.
 
 ### Database
-PostgreSQL 16. **Three tables: `users`, `documents`, `document_texts`.** Still three migrations — no schema change this checkpoint.
+PostgreSQL 16 with the `pgvector` Postgres extension (`CREATE EXTENSION vector`, enabled by this milestone's migration — the project's `docker-compose.yml` already uses the `pgvector/pgvector:pg16` image, which has the extension binary available, but every database still needs the extension explicitly enabled once). **Four tables: `users`, `documents`, `document_texts`, `document_chunks`.** Five migrations total — this milestone added one (`add embedding column to document_chunks`), on top of the `document_chunks` table itself (added by the prior Document Chunking milestone).
 
 ### File storage
-`app/services/storage_service.py` — unchanged this checkpoint.
+`app/services/storage_service.py` — unchanged this milestone.
 
 ### Parsing
-`app/services/parse_service.py` — unchanged this checkpoint. Now reachable end-to-end via `POST /documents/{document_id}/process` → `document_text_service.parse_and_store_document_text()` → `parse_service.extract_text()`, but `parse_service.py` itself was not modified.
+`app/services/parse_service.py` — unchanged this milestone.
+
+### Chunking
+`app/services/chunk_service.py` — `chunk_text()` (the deterministic algorithm) is unchanged this milestone. `_replace_chunks()` changed: it no longer computes chunk text internally — it now accepts pre-computed `chunk_texts` and `embeddings` and constructs every `DocumentChunk` with both already set, required because `embedding` is `NOT NULL`.
+
+### Embeddings (new this milestone)
+`app/services/embedding_service.py` — `embed_texts()`, wrapping the OpenAI async SDK. Model and dimensions are configured via `app/core/config.py` (`embedding_model`, `embedding_dimensions`), not hard-coded in more than that one place. `EmbeddingProviderError` is the one domain exception this module raises for any provider/network/timeout/malformed-response failure — never a raw `openai` exception, never leaked API keys or response bodies.
 
 ### Environment management
-`pydantic-settings` (`app/core/config.py`). No new settings this checkpoint.
+`pydantic-settings` (`app/core/config.py`). **New settings this milestone:** `openai_api_key` (no default — every real environment must set it), `embedding_model` (default `"text-embedding-3-small"`), `embedding_dimensions` (default `1536`).
 
 ---
 
@@ -273,7 +285,7 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 ## 6. DATABASE DESIGN
 
-**No schema change this checkpoint.** `users`, `documents`, and `document_texts` are all unchanged — Checkpoint 5 added an API route, not a column, table, or migration.
+**One column added this milestone.** `users`, `documents`, and `document_texts` are all unchanged.
 
 ### `document_texts` — schema unchanged since Checkpoint 3, migration `f5a18872f21b_create_document_texts_table`
 | Column | Type | Constraints |
@@ -287,30 +299,31 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 **No `status`, `error`, `parser_version`, or versioning column** — unchanged. Presence/absence of a `document_texts` row remains the only signal for "has this been processed."
 
-**This milestone's verification (Checkpoint 5's own test count still holds):** the `/process` endpoint's existing HTTP-level tests were extended (not replaced) to also assert chunk persistence — all still passing.
-
-### `document_chunks` — new this milestone, migration `411324fb18f5_create_document_chunks_table`
+### `document_chunks` — schema extended this milestone, migrations `411324fb18f5_create_document_chunks_table` (base table) + `368647c4431f_add_embedding_column_to_document_chunks` (this milestone)
 | Column | Type | Constraints |
 |---|---|---|
 | `id` | UUID | primary key, default `uuid4()` (via `BaseModel`) |
 | `document_text_id` | UUID | FK → `document_texts.id`, `ON DELETE CASCADE`, indexed (not unique — one `DocumentText` has many chunks) |
 | `chunk_index` | INTEGER | not null — 0-based ordering within the document, in original document order |
 | `content` | TEXT | not null — a chunk's text |
+| `embedding` | `vector(1536)` | **not null** — OpenAI `text-embedding-3-small`'s output, added this milestone |
 | `created_at` / `updated_at` | TIMESTAMPTZ | via `BaseModel` |
 
 **Composite `UniqueConstraint(document_text_id, chunk_index)`** — enforces "no two chunks claim the same position for the same text" at the database level, mirroring how `DocumentText.document_id` being `UNIQUE` enforces its own invariant structurally rather than by convention. Different `document_text_id`s may reuse the same `chunk_index` freely (verified by test).
 
 **No `relationship()`** on either `DocumentChunk` or `DocumentText` — same explicit-query pattern used everywhere else in this codebase.
 
-**No embedding/vector column, no pgvector type, no vector index** — deliberately deferred to whichever future milestone actually needs them; adding one now would be exactly the kind of speculative field this project has consistently avoided.
+**`embedding` is `NOT NULL`, deliberately** — the milestone's central invariant is that a committed `DocumentChunk` should never exist without its embedding; making the column `NOT NULL` lets Postgres itself enforce that (at flush/INSERT time, not just commit), rather than relying on application discipline alone. This required restructuring `_replace_chunks()` (see Section 3's architecture note and Section 7 below) so every chunk row is constructed with its embedding already set, before any flush. **No index on `embedding`, no embedding metadata columns** (`embedding_model`/`embedding_version`/`embedded_at`/`embedding_status`) — deliberately deferred; only one provider/model is in use, and a future model change is a deliberate future migration, not designed speculatively now.
 
 **Belongs to `DocumentText`, not `Document`, and carries no redundant `document_id`** — see Section 3's architecture note for the full rationale (a chunk is derived from extracted text, not the source file; the FK chain `chunk → document_text → document` is the single path back to the parent, not duplicated).
 
-**Reprocessing behavior: delete-then-recreate, not update-in-place, not versioned.** Chunk *count* changes when content changes, so there's no stable 1:1 row correspondence to update against (unlike `DocumentText`'s single-row upsert). `chunk_service._replace_chunks()` deletes all existing chunks for a `document_text_id` and inserts the newly computed set — verified by test to leave zero stale rows and zero duplicates after a reprocess with materially different content.
+**Reprocessing behavior: delete-then-recreate, not update-in-place, not versioned.** Chunk *count* changes when content changes, so there's no stable 1:1 row correspondence to update against (unlike `DocumentText`'s single-row upsert). `chunk_service._replace_chunks()` deletes all existing chunks for a `document_text_id` and inserts the newly computed set (with embeddings already attached) — verified by test to leave zero stale rows and zero duplicates after a reprocess with materially different content, and verified that the delete step is unreachable until new embeddings have already been generated successfully.
 
-**Persisted atomically with `DocumentText`** — see Section 3's transaction-consistency note. `document_processing_service.process_document()` is the only code path that writes to this table outside of tests.
+**Persisted atomically with `DocumentText`, now including embeddings** — see Section 3's transaction-consistency note. `document_processing_service.process_document()` is the only code path that writes to this table outside of tests.
 
-**Verification:** `test_document_chunk_model.py` (7 tests: insert, many-chunks-per-text, composite-uniqueness rejection, cross-document-text uniqueness allowed, cascade delete from `DocumentText`, full cascade chain from `Document`, FK-integrity rejection) and `test_chunk_service.py` (14 tests: pure algorithm + `_replace_chunks()` persistence) all pass against real Postgres.
+**pgvector extension:** enabled via `CREATE EXTENSION IF NOT EXISTS vector` inside this milestone's migration — required once per database, in any environment. The project's `docker-compose.yml` already uses the `pgvector/pgvector:pg16` image (the extension binary is present), but the extension itself still needs to be explicitly turned on inside each database, which this migration now does automatically.
+
+**Verification:** `test_document_chunk_model.py` (9 tests: insert, many-chunks-per-text, composite-uniqueness rejection, cross-document-text uniqueness allowed, cascade delete from `DocumentText`, full cascade chain from `Document`, FK-integrity rejection, embedding storage/retrieval with dimensionality check, embedding `NOT NULL` enforcement) and `test_chunk_service.py` (17 tests: pure algorithm, unchanged, plus `_replace_chunks()` persistence with pre-computed embeddings, mismatched-count rejection, no-independent-commit) all pass against real Postgres.
 
 ---
 
@@ -394,6 +407,28 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 **Not yet done, deliberately:** embeddings, pgvector, vector storage, semantic retrieval, RAG, single-document chat, background workers, Redis/Arq, OCR, any frontend chunk UI, any new public endpoint, any status/versioning column on chunks.
 
+### Document Chunks → Embeddings (this milestone)
+**What it does:** Extends `POST /documents/{document_id}/process` to generate and persist an OpenAI `text-embedding-3-small` embedding (1536 dimensions) for every chunk, atomically alongside the extracted text and chunks. This was preceded by a full design review (provider/model comparison, database design, transaction model, lifecycle, reprocessing strategy, testing strategy) and a corrective design-resolution pass that verified current OpenAI pricing/documentation, chose the official SDK over hand-rolled `httpx`, and — critically — caught that `DocumentChunk.embedding` being `NOT NULL` requires restructuring the processing order (embeddings must be generated *before* chunk rows are constructed, not after), all resolved and locked before implementation began.
+
+**Key decisions:**
+- **`embedding` is `NOT NULL`, not nullable.** The database itself now enforces the invariant that a committed chunk always has its embedding — see Section 6 for the full schema rationale.
+- **Processing order restructured to make that safe.** `chunk_service._replace_chunks()` no longer computes chunk text internally — it now accepts pre-computed `chunk_texts` and `embeddings` and constructs every `DocumentChunk` with both already set. `document_processing_service.process_document()` calls `chunk_text()` → `embedding_service.embed_texts()` → `_replace_chunks()`, in that order, before its single commit. `chunk_text()` itself (the deterministic algorithm) is completely unchanged.
+- **Reprocessing safety extended, not just preserved.** Because `_replace_chunks()` (which deletes the old chunk set) is only called after `embed_texts()` has already succeeded, an embedding-provider failure during reprocessing can never destroy the previous, still-valid chunks — the delete step is structurally unreachable until new embeddings are already in hand. Verified directly by `test_process_document_embedding_failure_during_reprocessing_leaves_previous_state_intact`, which the design review's own author called "one of the most important tests of the milestone."
+- **`embedding_service.py` wraps the OpenAI SDK, single function, no abstraction.** `embed_texts(texts: list[str]) -> list[list[float]]` — batches an entire document's chunks into one API request, sorts the response by its own `index` field (not array order, for correctness), validates the returned count matches the input, and translates every provider/network/timeout/malformed-response failure into one domain exception, `EmbeddingProviderError` — never a raw `openai` exception, never a leaked API key or response body.
+- **`/process`'s error mapping gains exactly one new case: `EmbeddingProviderError` → `502`.** Distinct from the existing `422` (the client's document content) and `500` (this project's own storage integrity) — `502` is specifically "an upstream dependency we called failed," a genuinely new failure category this milestone introduces. Generic client-facing message only.
+- **Synchronous, inside the existing endpoint — no background worker, no new endpoint.** Both were evaluated explicitly during design review and rejected: a worker would introduce Redis/Arq before there's any evidence synchronous processing is too slow (this project's own standing principle); a separate embedding endpoint would reopen the exact stale-derived-state risk chunking's own `/process` integration was designed to close.
+- **No vector index, no embedding metadata columns, no provider abstraction, no retries.** All confirmed still correct during design review — see Section 6 and Section 11 for the specific rationale on each.
+- **Two real environment bugs caught and fixed during implementation, not just assumed away:** the autogenerated migration was missing `import pgvector.sqlalchemy` (would have raised `NameError` at runtime — caught during mandatory hand-review, not autogenerated blindly); and the pgvector Postgres extension needed to be explicitly enabled per-database (`CREATE EXTENSION IF NOT EXISTS vector`), now the first statement in this milestone's migration so any fresh database — including a real deploy — gets it automatically rather than failing the same way.
+- **A genuine test-infrastructure discovery, not a production bug:** the test suite's `client` fixture overrides `get_db` with a plain `yield db_session` (no `async with`), unlike production's real `get_db()` — meaning an exception during an HTTP-level test does *not* automatically roll back the shared test session the way `AsyncSession.close()` does in production. HTTP-level tests that exercise a genuine mid-transaction failure (the new `502` test) must call `db_session.rollback()` explicitly first, exactly mirroring what production already does implicitly — the same technique already established by `test_document_processing_service.py`'s own atomicity tests.
+
+**Files:** New — `backend/app/services/embedding_service.py`, `backend/alembic/versions/368647c4431f_add_embedding_column_to_document_chunks.py`, `backend/tests/test_embedding_service.py`. Modified — `backend/app/models/document_chunk.py` (adds `embedding: Vector(1536), nullable=False`), `backend/app/services/chunk_service.py` (`_replace_chunks()`'s signature changes; `chunk_text()` untouched), `backend/app/services/document_processing_service.py` (adds the embed-then-replace step to the existing orchestration), `backend/app/api/documents.py` (adds the `502` mapping), `backend/app/core/config.py` (adds `openai_api_key`/`embedding_model`/`embedding_dimensions`), `backend/.env.example`, `backend/pyproject.toml` (adds `openai`, `pgvector`), `backend/tests/test_document_chunk_model.py`, `backend/tests/test_chunk_service.py`, `backend/tests/test_document_processing_service.py`, `backend/tests/test_document_process_api.py`. **No frontend file modified.**
+
+**Tests:** 16 new (8 in `test_embedding_service.py`, 2 in `test_document_chunk_model.py`, 3 in `test_chunk_service.py`, 2 in `test_document_processing_service.py`, 1 in `test_document_process_api.py`), plus extensions to several existing tests across those same files for the new signatures/assertions. **169 backend tests passing overall (153 pre-existing + 16 new), zero regressions.** No test in the suite ever calls the real OpenAI API — every provider call is monkeypatched at the `embedding_service.embed_texts` boundary.
+
+**Verified beyond pytest:** `alembic heads`/`alembic current` checked against the real repository *before* generating the new migration (both `411324fb18f5 (head)`, matching the expected pre-milestone Document Chunking state). The autogenerated migration was hand-reviewed (detected only the intended column, no drift) — and that review caught the missing `pgvector` import before it could fail at deploy time. After applying: `alembic current`/`heads` both `368647c4431f (head)`, `alembic check` → "No new upgrade operations detected." `git status --short`/`git diff --stat`/`--name-only` confirmed the exact, minimal change surface matching the approved file list.
+
+**Not yet done, deliberately:** vector index (HNSW/IVFFlat), semantic/similarity search, retrieval, RAG, single-document chat, embedding metadata/versioning columns, background workers, Redis/Arq, automatic retries, provider abstraction, a second embedding provider, any frontend embedding UI, deployment.
+
 ---
 
 ## 8. AUTHENTICATION FLOW
@@ -404,7 +439,7 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 ## 9. API ENDPOINTS
 
-**No route added or removed this milestone** — `/process`'s existing contract is extended in behavior (it now also persists chunks) but not in shape. `document_texts` and `document_chunks` content are both still not exposed via HTTP in any form — the endpoint returns `DocumentResponse`, never `DocumentText` or chunk data.
+**No route added or removed this milestone** — `/process`'s existing contract is extended in behavior (it now also generates and persists embeddings) but not in shape, aside from one new possible error status. `document_texts` and `document_chunks` content/embeddings are all still not exposed via HTTP in any form — the endpoint returns `DocumentResponse`, never `DocumentText`, chunk data, or embedding vectors.
 
 | Method | Route | Purpose | Auth required? |
 |---|---|---|---|
@@ -416,9 +451,9 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 | GET | `/api/v1/documents/{document_id}` | Get one document's metadata | **Yes** |
 | GET | `/api/v1/documents/{document_id}/file` | Download the actual stored file | **Yes** |
 | DELETE | `/api/v1/documents/{document_id}` | Delete a document (file + DB row) | **Yes** |
-| POST | `/api/v1/documents/{document_id}/process` | Parse the document, persist extracted text and chunks (atomically); reprocesses (replacing both) if already processed | **Yes** |
+| POST | `/api/v1/documents/{document_id}/process` | Parse the document, persist extracted text, chunks, and their embeddings (atomically); reprocesses (replacing all three) if already processed | **Yes** |
 
-`docs/API.md` updated this milestone — the `/process` section now documents the atomic text+chunk persistence and chunk-replacement reprocessing behavior.
+`docs/API.md` updated this milestone — the `/process` section now documents synchronous embedding generation, the atomic text+chunk+embedding persistence, and the new `502` response for an embedding-provider failure.
 
 ---
 
@@ -470,6 +505,22 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 68. **Chunking integrates into the existing `/process` endpoint rather than a new endpoint.** The endpoint's purpose is already "make this document's derived state current" — a separate `/chunk` endpoint would let a client call one without the other, creating a real risk of a document with fresh text but stale chunks (or vice versa) that no response would ever indicate. `/process`'s request/response contract is unchanged; only its internal behavior extends.
 
+69. **OpenAI `text-embedding-3-small` (1536 dimensions) is the embedding provider/model, chosen over a local/open-source model.** A hosted API fits this project's demonstrated architecture far better — no heavy ML stack (torch/sentence-transformers) has ever existed here, and introducing one now for Phase 1's single-document, low-volume scope would be real deployment complexity (model weights, memory, cold-start) with no corresponding benefit. Pricing/availability were verified against OpenAI's own documentation during the design-resolution pass, not assumed from training-data memory.
+
+70. **The official OpenAI Python SDK, not hand-rolled `httpx`.** Counter-intuitively, the SDK is the *simpler* choice here, not the heavier one: it already provides tested request/response validation, timeout handling, and async support, all of which a hand-rolled `httpx` call would have to reimplement (and re-test) from scratch. This doesn't violate the "no provider abstraction" principle — the SDK is entirely encapsulated inside `embedding_service.py`; nothing else in the codebase knows or cares that it's being used.
+
+71. **`DocumentChunk.embedding` is `NOT NULL`, requiring the processing order to compute embeddings before constructing chunk rows.** Reversing an earlier design's assumption that embeddings could be assigned to already-flushed chunk objects — Postgres enforces `NOT NULL` at flush/INSERT time, not commit, so that ordering would have failed immediately. The corrected order (`chunk_text()` → `embed_texts()` → construct-and-flush `DocumentChunk` rows with embeddings already set) makes `NOT NULL` both safe and the stronger invariant: the database itself now guarantees a committed chunk never lacks its embedding, rather than relying on application discipline alone.
+
+72. **`chunk_service._replace_chunks()`'s signature changed to accept pre-computed `chunk_texts` and `embeddings`, rather than computing chunk text internally.** A direct, necessary consequence of Decision #71 — `chunk_text()` itself (the deterministic algorithm) is completely unchanged; only the persistence primitive's inputs changed, since embeddings must exist before any `DocumentChunk` is constructed.
+
+73. **A dedicated `embedding_service.py`, wrapping the OpenAI SDK, with a single function and no provider abstraction.** Mirrors `parse_service.py`/`storage_service.py`'s established "wrap one external capability" shape. No interface, no strategy pattern, no registry — there is exactly one provider and one real caller (`document_processing_service.process_document()`), so an abstraction layer has no second implementation or caller to justify it.
+
+74. **Embeddings are generated synchronously, inside `/process`, before the single commit — no background worker, no separate endpoint.** Both alternatives were evaluated and rejected during design review: a worker would introduce Redis/Arq before there's any evidence synchronous processing is actually too slow (violating this project's standing "introduce infrastructure only when demonstrably needed" principle); a separate embedding endpoint would let a client call one operation without the other, reopening the exact stale-derived-state risk chunking's own `/process` integration (Decision #68) was designed to close.
+
+75. **`EmbeddingProviderError` maps to `502 Bad Gateway`, a genuinely new status this API introduces.** Distinct from `422` (the client's document content is unprocessable) and `500` (this project's own storage integrity failed) — `502` is specifically "an upstream dependency we depend on failed," a real, new failure category this milestone is the first to need. The client-facing message is generic; no raw provider exception text, response body, or API key ever reaches a response.
+
+76. **No embedding metadata columns** (`embedding_model`, `embedding_version`, `embedding_status`, `embedded_at`)**, no vector index, no automatic retries.** All confirmed still correct during the design-resolution pass: only one provider/model is in use for Phase 1 (a future change is a deliberate future migration, not designed speculatively now); an ANN index solves a Phase 2+ (cross-document) retrieval problem that doesn't exist yet; and Phase 1's synchronous, interactive, single-user request is cheap to retry manually, so automatic backoff logic is complexity without an established need.
+
 ---
 
 ## 12. CURRENT TASK STATUS
@@ -485,43 +536,47 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - Post-CRUD architectural review (review-only).
 - Document Text Extraction Checkpoints 1–5 — parser, schema, parse-to-persist integration, explicit processing endpoint. **Complete.**
 - Task 3C — Frontend document management. **Complete.**
-- **Document Chunking — deterministic chunking algorithm, `document_chunks` table, atomic text+chunk persistence via a new orchestration service. Complete.**
+- Document Chunking — deterministic chunking algorithm, `document_chunks` table, atomic text+chunk persistence via a new orchestration service. **Complete.**
+- **Document Chunks → Embeddings — OpenAI `text-embedding-3-small` embeddings generated and persisted atomically alongside text and chunks, via the same orchestration service extended. Complete.**
 
-**Git state:** everything through Document Chunking was implemented and verified in this working tree, on top of the same still-uncommitted working tree carrying Checkpoint 5's backend changes and Task 3C's frontend changes. Nothing has been committed or pushed — per this milestone's own instructions. `alembic heads`/`alembic current` were checked against the real repository *before* generating the new migration (not assumed from a stale snapshot); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact combined change surface.
+**Git state:** everything through this milestone was implemented and verified in this working tree, on top of the same still-uncommitted working tree carrying Checkpoint 5's backend changes, Task 3C's frontend changes, and Document Chunking. Nothing has been committed or pushed — per this milestone's own instructions. `alembic heads`/`alembic current` were checked against the real repository *before* generating the new migration (not assumed from a stale snapshot); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact combined change surface.
 
 **Not started at all:**
 - Automatic parsing on upload — deliberately not built; a confirmed design decision, not an oversight.
 - DOCX/TXT extraction.
-- Embeddings, pgvector usage, vector similarity search.
+- Vector similarity search, retrieval, RAG, single-document chat.
+- Vector index (HNSW/IVFFlat).
 - Background worker, Redis, Arq.
-- Any status/processing-state column, parser or chunk versioning.
-- Everything related to RAG and chat.
+- Any status/processing-state column, parser/chunk/embedding versioning.
 - Document detail page, PDF viewer/annotation, any research-workspace UI.
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None. Document Chunking is complete and fully verified for its approved, deliberately narrow scope — deterministic chunk generation and atomic persistence only, no embeddings, no retrieval, no frontend surface.
+**Partially completed work:** None. Document Chunks → Embeddings is complete and fully verified for its approved, deliberately narrow scope — embedding generation and atomic persistence only, no retrieval, no similarity search, no frontend surface.
 
 ---
 
 ## 13. NEXT TASK
 
-**Document Chunking is now complete.** The next task is genuinely open and not yet designed — candidates, per the roadmap's remaining phases, include: embeddings generation (the natural next consumer of `document_chunks`), DOCX/TXT text extraction (`parse_service` is currently PDF-only by deliberate Checkpoint 1 scoping), or a first deployment pass. None of these has been discussed, designed, or approved — this section intentionally does not recommend one over the others, since no design-review conversation has happened yet for whichever comes next.
+**Document Chunks → Embeddings is now complete.** Every chunk in the database now has a real, queryable embedding — but nothing queries it yet. The natural next milestone is vector similarity search/retrieval (the first real consumer of `document_chunks.embedding`), which would then unblock RAG and single-document chat. DOCX/TXT text extraction and a first deployment pass remain open, undesigned alternatives. None of these has been discussed, designed, or approved — this section intentionally does not commit to one over the others, since no design-review conversation has happened yet for whichever comes next.
 
-**Confirmed decisions from Checkpoints 2–5, Task 3C, and Document Chunking (do not re-litigate without a new reason):**
+**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, and Document Chunks → Embeddings (do not re-litigate without a new reason):**
 - Separate `document_texts` table, not a `Document` column; separate `document_chunks` table, FK'd to `document_texts`, not `documents`.
 - 1:0..1 (`DocumentText`) / 1:many (`DocumentChunk`) via constraints, no versioning on either.
 - No status column, no `relationship()` anywhere.
-- Dedicated `document_text_service.py`, `chunk_service.py`, and `document_processing_service.py` — each a focused file, not folded together.
+- Dedicated `document_text_service.py`, `chunk_service.py`, `document_processing_service.py`, and `embedding_service.py` — each a focused file, not folded together.
 - `DocumentText` uses upsert (update-in-place); `DocumentChunk` uses delete-then-recreate — different strategies, each justified by whether a stable row correspondence exists.
-- Text persistence and chunk persistence happen in **one transaction**, via `document_processing_service.process_document()` — not two independent commits.
-- No public, self-committing chunking API — only `chunk_text()` (pure) and the internal `_replace_chunks()` exist; avoid adding a speculative public entry point without a real second caller.
+- Text, chunk, and embedding persistence happen in **one transaction**, via `document_processing_service.process_document()` — not independent commits.
+- No public, self-committing chunking or embedding API — only pure/private primitives exist; avoid adding a speculative public entry point without a real second caller.
 - The chunking algorithm is character-count-based and fully deterministic — no tokenizer/NLP dependency added.
-- Processing (and now chunking) is triggered by the existing explicit `/process` endpoint, not automatically on upload, and not via a new endpoint.
-- The process endpoint returns `DocumentResponse`, never `DocumentText`, extracted text, or chunk data.
+- OpenAI `text-embedding-3-small` (1536 dims) via the official SDK, encapsulated entirely inside `embedding_service.py` — no provider abstraction, no second provider.
+- `DocumentChunk.embedding` is `NOT NULL` — embeddings are always generated before chunk rows are constructed.
+- Processing (parsing, chunking, embedding) is triggered by the existing explicit `/process` endpoint, not automatically on upload, and not via separate endpoints for each stage.
+- The process endpoint returns `DocumentResponse`, never `DocumentText`, extracted text, chunk data, or embedding vectors.
 - No document detail page — list rows already show everything `DocumentResponse` provides.
 - No persisted "processed" status anywhere, frontend or backend — the backend doesn't track one.
 - A `401` from any authenticated frontend call triggers logout + redirect to `/login`.
+- No vector index yet — deferred until multi-document/large-scale retrieval genuinely needs one.
 - No HTTP client library, form library, CSS framework, or tokenizer/NLP dependency introduced anywhere in this project so far.
 
 ---
@@ -536,7 +591,8 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
   - **Document Text Extraction Checkpoints 1–5 ✅ done** — parser, schema, parse-to-persist integration, explicit processing endpoint (`POST /documents/{document_id}/process`); upload remains unmodified.
   - **Task 3C (frontend document management) ✅ done** — protected `/documents` route; list, upload, download, delete, and an explicit "Process" action, all on the existing backend contract with zero backend changes.
   - **Document Chunking ✅ done** — `document_chunks` table, deterministic chunking algorithm, atomic text+chunk persistence via `document_processing_service.py`; no new endpoint, no frontend change.
-  - Embeddings, pgvector, vector retrieval, RAG, chat — not started.
+  - **Document Chunks → Embeddings ✅ done** — OpenAI `text-embedding-3-small` embeddings generated and persisted atomically alongside text and chunks; no vector index yet, no frontend change.
+  - Vector retrieval, RAG, chat — not started.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.
 - **Phase 3:** Notes, highlights, tags; GROBID metadata extraction.
@@ -559,6 +615,12 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 19. **RESOLVED this checkpoint.** Prior syncs noted "this sandbox environment has no git repository at all." This checkpoint had direct access to the real repository (including `.git`) for the first time — `git status`, `git log`, `git diff` were all run for real. This item is retained here for historical continuity but no longer describes the current working environment; a future session should re-verify which environment it's actually running in rather than assuming either state.
 
 20. **No PostgreSQL server pre-existed in this checkpoint's sandbox** — it was installed fresh (PostgreSQL 16 via `apt-get`) and two databases (`researchpilot`, `researchpilot_test`) were created before any verification could run. The real `.env` file's actual password (not a placeholder) was discovered and matched against the freshly-created Postgres role, rather than assuming the `.env.example` template's values were live. Not a project defect — a note for the next Claude that this sandbox's infrastructure is provisioned fresh each time and isn't preserved between sessions.
+
+21. **RESOLVED this milestone.** The pgvector Postgres extension binary was not installed on this sandbox's manually-provisioned Postgres instance at all (`postgresql-16-pgvector` was installed via `apt-get`, then `CREATE EXTENSION vector` succeeded). The project's real `docker-compose.yml` already uses the `pgvector/pgvector:pg16` image, which has the binary — but the extension still needs to be explicitly enabled per-database regardless of environment, which the new migration now does automatically (`CREATE EXTENSION IF NOT EXISTS vector` as its first statement) rather than assuming it. Worth remembering: a fresh database in *any* environment, not just this sandbox, needs this statement run once.
+
+22. **A real bug caught during mandatory migration hand-review, not applied blindly:** Alembic's `--autogenerate` produced a migration referencing `pgvector.sqlalchemy.vector.VECTOR` without adding the corresponding `import pgvector.sqlalchemy` line — would have raised `NameError` the first time the migration actually ran. Caught and fixed before applying, per this project's own standing migration-review discipline (§19 of this document).
+
+23. **A real gap discovered in the test suite's `client` fixture, not a production bug:** `tests/conftest.py`'s `_override_get_db()` does `yield db_session` with no `async with`/`finally`, unlike production's real `get_db()` (`async with AsyncSessionLocal() as session: yield session`). This means an exception during an HTTP-level test does *not* automatically roll back the shared test session the way `AsyncSession.close()` does in production — a flushed-but-uncommitted row stays visible to same-session queries after the request "fails." Any future HTTP-level test that exercises a genuine mid-transaction failure needs an explicit `await db_session.rollback()` before asserting on database state, mirroring what production does implicitly. Worth fixing the fixture itself in a future housekeeping pass, but out of scope for this milestone to touch test infrastructure unrelated to embeddings.
 
 ---
 

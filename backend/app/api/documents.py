@@ -33,7 +33,13 @@ from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.document import DocumentResponse
-from app.services import document_processing_service, document_service, parse_service, storage_service
+from app.services import (
+    document_processing_service,
+    document_service,
+    embedding_service,
+    parse_service,
+    storage_service,
+)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -252,6 +258,14 @@ async def process_document(
       problem — the Document row is valid and owned by the caller,
       but its file is missing from disk — distinct from a client
       error, same as download's identical handling)
+    - EmbeddingProviderError -> 502 (Document Chunks -> Embeddings
+      milestone: an external dependency — the embedding provider —
+      failed. Distinct from both 422 (the client's document content)
+      and 500 (our own storage integrity): this is specifically
+      "an upstream service we depend on didn't respond correctly."
+      The client-facing message is generic — no raw provider
+      exception text, response body, or API key ever reaches the
+      response.)
     """
     document = await document_service.get_document_for_user(
         db, document_id=document_id, user_id=current_user.id
@@ -271,6 +285,11 @@ async def process_document(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="The stored file for this document could not be found.",
+        ) from exc
+    except embedding_service.EmbeddingProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Embedding generation failed. Please try again.",
         ) from exc
 
     return DocumentResponse.model_validate(document)

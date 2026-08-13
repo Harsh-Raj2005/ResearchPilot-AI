@@ -28,12 +28,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.document_chunk import DocumentChunk
 from app.models.document_text import DocumentText
+from app.services import embedding_service
 
 
 @pytest.fixture(autouse=True)
 def _isolated_upload_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
     yield tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _mock_embed_texts(monkeypatch):
+    """No test in this file ever calls the real OpenAI API."""
+
+    async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
+        return [[0.5] * 1536 for _ in texts]
+
+    monkeypatch.setattr(embedding_service, "embed_texts", _fake_embed_texts)
+    yield _fake_embed_texts
 
 
 def _make_pdf_bytes(pages_text: list[str]) -> bytes:
@@ -272,6 +284,53 @@ async def test_process_document_missing_stored_file_returns_500(
     assert chunk_result.scalars().first() is None
 
 
+# --- 7b. Embedding provider failure (Document Chunks -> Embeddings milestone) ---
+
+
+async def test_process_document_embedding_failure_returns_502(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    async def _failing_embed_texts(texts):
+        raise embedding_service.EmbeddingProviderError(
+            "raw provider stack trace / api key / internal detail that must never leak"
+        )
+
+    monkeypatch.setattr(embedding_service, "embed_texts", _failing_embed_texts)
+
+    headers = await _auth_headers(client, email="processembedfail@example.com", username="processembedfail")
+    document_id = await _upload_pdf(
+        client, headers, filename="paper.pdf", content=_make_pdf_bytes(["Some real extractable text."])
+    )
+
+    response = await client.post(f"/api/v1/documents/{document_id}/process", headers=headers)
+
+    assert response.status_code == 502
+    body = response.json()
+    # Generic, safe message only — no raw provider exception text leaks.
+    assert "raw provider stack trace" not in body["detail"]
+    assert "api key" not in body["detail"].lower()
+
+    # The DocumentText upsert flushes (but never commits) before
+    # embed_texts() runs — the test client's get_db override shares
+    # one session across the whole test (unlike production's get_db,
+    # which wraps each request in `async with AsyncSessionLocal()`
+    # and rolls back automatically on any propagating exception via
+    # AsyncSession.close()). Rolling back explicitly here reproduces
+    # that same production guarantee for this same-session query,
+    # exactly like test_document_processing_service.py's atomicity
+    # tests already do.
+    await db_session.rollback()
+
+    # Nothing was persisted — same "no partial state" guarantee as
+    # every other failure mode this endpoint already handles.
+    result = await db_session.execute(
+        select(DocumentText).where(DocumentText.document_id == uuid.UUID(document_id))
+    )
+    assert result.scalar_one_or_none() is None
+    chunk_result = await db_session.execute(select(DocumentChunk))
+    assert chunk_result.scalars().first() is None
+
+
 # --- 8. Authentication ---
 
 
@@ -315,3 +374,4 @@ async def test_process_document_response_excludes_internal_fields(client: AsyncC
     assert "storage_path" not in body
     assert "stored_filename" not in body
     assert "chunks" not in body
+    assert "embedding" not in body
