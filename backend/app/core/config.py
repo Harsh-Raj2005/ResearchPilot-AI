@@ -57,6 +57,18 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
 
+    # --- LLM generation (RAG Foundation milestone) ---
+    # A distinct model setting from embedding_model — the embedding
+    # model and the generation model are never the same model and
+    # must never be confused. Encapsulated entirely inside
+    # llm_service.py; the OpenAI API key above is shared (same
+    # provider, same credential), not duplicated. Default chosen as a
+    # current, cost-appropriate general-purpose chat model for this
+    # project's Phase 1 scale — worth re-confirming against current
+    # OpenAI documentation at deploy time, same discipline already
+    # applied to embedding_model's own default.
+    llm_model: str = "gpt-5.4-mini"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

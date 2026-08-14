@@ -55,8 +55,18 @@ retrieval actually needs one).
 primitive can now perform pgvector cosine-distance similarity search**
 over a single, already-authorized document's chunks — the first real
 consumer of the stored embeddings. It's not exposed via any HTTP
-endpoint yet; it exists as a tested building block for a future
-RAG/chat layer. RAG and chat themselves are not implemented. See
+endpoint yet.
+
+**A new internal `rag_service.answer_question()` primitive now
+connects retrieval to an LLM** — it embeds a question, retrieves the
+most relevant chunks from one authorized document, assembles a
+grounded prompt (retrieved text is treated as untrusted reference
+material, not instructions), and calls a new `llm_service.py`
+(OpenAI Chat Completions) to generate an answer. If no relevant
+chunks are found, it returns a deterministic fallback without calling
+the LLM at all. This is a pure internal service — no HTTP endpoint,
+no chat persistence, no frontend UI yet; it's the foundation
+single-document chat will eventually call. See
 `docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
 for the task-by-task history.
 

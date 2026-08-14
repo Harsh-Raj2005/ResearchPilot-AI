@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), Document Chunking, and Document Chunks → Embeddings are all fully complete. **This milestone (Vector Retrieval) is the first real consumer of `document_chunks.embedding`** — a new internal-only `retrieval_service.retrieve_similar_chunks()` primitive performs pgvector cosine-distance similarity search over a single, already-authorized document's chunks. No new endpoint, no new migration, no vector index, no frontend change. RAG and chat — the layers that will actually call this primitive — remain unimplemented. Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), Document Chunking, Document Chunks → Embeddings, and Vector Retrieval are all fully complete. **This milestone (RAG Foundation) connects those primitives to an LLM** — a new internal-only `rag_service.answer_question()` composes `embedding_service.embed_query()`, `retrieval_service.retrieve_similar_chunks()`, and a new `llm_service.generate_answer()` (OpenAI Chat Completions) into a single-document question-answering pipeline. No new endpoint, no new migration, no chat persistence, no frontend change — this is a pure internal service, the foundation single-document chat will eventually call. Nothing has been deployed yet.
 
 ---
 
@@ -539,42 +539,48 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - Document Chunking — deterministic chunking algorithm, `document_chunks` table, atomic text+chunk persistence via a new orchestration service. **Complete.**
 - **Document Chunks → Embeddings — OpenAI `text-embedding-3-small` embeddings generated and persisted atomically alongside text and chunks, via the same orchestration service extended. Complete.**
 - **Vector Retrieval — internal `retrieval_service.retrieve_similar_chunks()` primitive; pgvector cosine-distance search scoped to a single, authorized document; `embedding_service.embed_query()` added for single-text embedding. Complete.**
+- **RAG Foundation — internal `rag_service.answer_question()` primitive; composes `embed_query()` + `retrieve_similar_chunks()` + a new `llm_service.generate_answer()` into a single-document Q&A pipeline. Complete.**
 
-**Git state:** everything through this milestone was implemented on top of the real, committed `b346022` (`feat: add document chunk embeddings`, branch `embeddings-work`). This milestone's changes remain uncommitted, per its own instructions. `alembic current`/`heads`/`check` were re-verified (unchanged — no schema change this milestone); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact change surface.
+**Git state:** everything through this milestone was implemented on top of the real, committed `b346022` (`feat: add document chunk embeddings`, branch `embeddings-work`), on top of the still-uncommitted Vector Retrieval changes already in this working tree. This milestone's changes remain uncommitted, per its own instructions. `alembic current`/`heads`/`check` were re-verified (unchanged — no schema change this milestone); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact change surface.
 
 **Not started at all:**
 - Automatic parsing on upload — deliberately not built; a confirmed design decision, not an oversight.
 - DOCX/TXT extraction.
-- RAG (retrieval + prompt assembly + LLM call), single-document chat.
+- Single-document chat (a persisted conversation, exposed via HTTP) — RAG Foundation is the internal pipeline chat will eventually call, not chat itself.
+- Any RAG/chat HTTP endpoint — `rag_service` is internal-only, with no current caller beyond its own tests.
+- Chat persistence (`ChatSession`/`ChatMessage` models, conversation memory).
 - Vector index (HNSW/IVFFlat) — deferred until multi-document/large-scale retrieval genuinely needs one.
 - Background worker, Redis, Arq.
 - Any status/processing-state column, parser/chunk/embedding versioning.
-- Any retrieval-related public HTTP endpoint — `retrieval_service` is internal-only, with no current caller beyond its own tests; a future RAG/chat layer is the intended consumer.
-- Document detail page, PDF viewer/annotation, any research-workspace UI.
+- Multi-document/global semantic search (Phase 2).
+- Document detail page, PDF viewer/annotation, any research-workspace UI, frontend chat UI.
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None. Vector Retrieval is complete and fully verified for its approved, deliberately narrow scope — similarity search over one document's own chunks only, no RAG, no chat, no new endpoint, no frontend surface.
+**Partially completed work:** None. RAG Foundation is complete and fully verified for its approved, deliberately narrow scope — a pure internal single-document Q&A service, no HTTP endpoint, no persistence, no frontend surface.
 
 ---
 
 ## 13. NEXT TASK
 
-**Document Chunks → Embeddings is now complete.** Every chunk in the database now has a real, queryable embedding — but nothing queries it yet. The natural next milestone is vector similarity search/retrieval (the first real consumer of `document_chunks.embedding`), which would then unblock RAG and single-document chat. DOCX/TXT text extraction and a first deployment pass remain open, undesigned alternatives. None of these has been discussed, designed, or approved — this section intentionally does not commit to one over the others, since no design-review conversation has happened yet for whichever comes next.
+**RAG Foundation is now complete.** `rag_service.answer_question()` exists, is tested, and can produce a grounded answer to a question about one document's own chunks — but nothing calls it outside its own tests yet. The natural next milestones, none yet designed or approved, include: a thin authenticated HTTP endpoint exposing this pipeline (Stage B, explicitly deferred from this milestone), chat persistence (`ChatSession`/`ChatMessage` models) to remember a conversation across requests, a frontend chat UI, DOCX/TXT text extraction, or a first deployment pass. This section intentionally does not commit to one over the others, since no design-review conversation has happened yet for whichever comes next.
 
-**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, and Document Chunks → Embeddings (do not re-litigate without a new reason):**
+**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, Document Chunks → Embeddings, Vector Retrieval, and RAG Foundation (do not re-litigate without a new reason):**
 - Separate `document_texts` table, not a `Document` column; separate `document_chunks` table, FK'd to `document_texts`, not `documents`.
 - 1:0..1 (`DocumentText`) / 1:many (`DocumentChunk`) via constraints, no versioning on either.
 - No status column, no `relationship()` anywhere.
-- Dedicated `document_text_service.py`, `chunk_service.py`, `document_processing_service.py`, and `embedding_service.py` — each a focused file, not folded together.
+- Dedicated `document_text_service.py`, `chunk_service.py`, `document_processing_service.py`, `embedding_service.py`, `retrieval_service.py`, `llm_service.py`, and `rag_service.py` — each a focused file, not folded together.
 - `DocumentText` uses upsert (update-in-place); `DocumentChunk` uses delete-then-recreate — different strategies, each justified by whether a stable row correspondence exists.
 - Text, chunk, and embedding persistence happen in **one transaction**, via `document_processing_service.process_document()` — not independent commits.
 - No public, self-committing chunking or embedding API — only pure/private primitives exist; avoid adding a speculative public entry point without a real second caller.
 - The chunking algorithm is character-count-based and fully deterministic — no tokenizer/NLP dependency added.
-- OpenAI `text-embedding-3-small` (1536 dims) via the official SDK, encapsulated entirely inside `embedding_service.py` — no provider abstraction, no second provider.
+- OpenAI `text-embedding-3-small` (1536 dims) for embeddings and a distinct `llm_model` setting for generation — never confused, both encapsulated entirely inside their own service file — no provider abstraction, no second provider for either.
 - `DocumentChunk.embedding` is `NOT NULL` — embeddings are always generated before chunk rows are constructed.
 - Processing (parsing, chunking, embedding) is triggered by the existing explicit `/process` endpoint, not automatically on upload, and not via separate endpoints for each stage.
 - The process endpoint returns `DocumentResponse`, never `DocumentText`, extracted text, chunk data, or embedding vectors.
+- **`rag_service.answer_question()` accepts an already-authorized `Document`, performs zero ownership checks of its own** — the exact same pattern already established by `document_text_service` and `retrieval_service`.
+- **Empty retrieval returns a deterministic fallback answer (`rag_service.NO_CONTEXT_ANSWER`) without ever calling the LLM** — chosen over sending empty context and hoping the model says "I don't know."
+- **`retrieval_service.DEFAULT_TOP_K`/`MAX_TOP_K` remain the single source of truth for top-k policy** — `rag_service` passes `top_k` through unchanged, no second clamping policy.
 - No document detail page — list rows already show everything `DocumentResponse` provides.
 - No persisted "processed" status anywhere, frontend or backend — the backend doesn't track one.
 - A `401` from any authenticated frontend call triggers logout + redirect to `/login`.
@@ -594,7 +600,10 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
   - **Task 3C (frontend document management) ✅ done** — protected `/documents` route; list, upload, download, delete, and an explicit "Process" action, all on the existing backend contract with zero backend changes.
   - **Document Chunking ✅ done** — `document_chunks` table, deterministic chunking algorithm, atomic text+chunk persistence via `document_processing_service.py`; no new endpoint, no frontend change.
   - **Document Chunks → Embeddings ✅ done** — OpenAI `text-embedding-3-small` embeddings generated and persisted atomically alongside text and chunks; no vector index yet, no frontend change.
-  - Vector retrieval, RAG, chat — not started.
+  - **Vector Retrieval ✅ done** — internal `retrieval_service.retrieve_similar_chunks()` primitive; pgvector cosine-distance search; no new endpoint, no frontend change.
+  - **RAG Foundation ✅ done** — internal `rag_service.answer_question()` primitive composing embedding + retrieval + a new `llm_service.generate_answer()`; no new endpoint, no chat persistence, no frontend change.
+  - Single-document chat (HTTP endpoint + persistence) — not started.
+  - Frontend chat UI — not started.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.
 - **Phase 3:** Notes, highlights, tags; GROBID metadata extraction.

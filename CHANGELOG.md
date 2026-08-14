@@ -1105,3 +1105,101 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   index, no Redis/background worker, no provider abstraction —
   all confirmed still out of scope and unimplemented. This milestone
   adds a tested, internal similarity-search building block only.
+
+### RAG Foundation
+- Added `backend/app/services/llm_service.py` — `generate_answer
+  (system_prompt, user_prompt) -> str`, the only place the OpenAI
+  Chat Completions API is called anywhere in this codebase. Mirrors
+  `embedding_service.py`'s exact shape: one small module wrapping one
+  external capability, no provider interface, no strategy pattern.
+  Uses Chat Completions (not the newer Responses API) — the simplest
+  fit for a plain system+user → text-answer call with no tool
+  calling, agents, multi-turn state, or streaming. Client is
+  constructed per call, never at import time, so importing this
+  module never requires an API key. Defines `LLMProviderError`,
+  wrapping every `openai.OpenAIError` (and a defensive check for a
+  malformed/empty response) without leaking raw provider text,
+  response bodies, or the API key — the same translation pattern
+  `EmbeddingProviderError` already established.
+- Added `backend/app/services/rag_service.py` — `answer_question(db,
+  *, document, question, top_k=DEFAULT_TOP_K) -> str`, the
+  orchestration layer connecting the existing embedding and retrieval
+  primitives to the new LLM service:
+  `embed_query()` → `retrieve_similar_chunks()` → prompt assembly →
+  `llm_service.generate_answer()`. Mirrors the exact composition
+  pattern already established by `document_processing_service.py` —
+  a thin orchestrator that composes other focused services without
+  owning their internals.
+- **Stage A only — no HTTP endpoint.** `rag_service` is a pure
+  internal service with no current caller beyond its own tests. A
+  thin authenticated endpoint is an explicitly separate, future
+  decision, not bundled into this milestone.
+- **No authorization duplication.** `answer_question()` accepts an
+  already-authorized `Document` and performs zero ownership checks of
+  its own — the exact same pattern already established by
+  `document_text_service` and `retrieval_service`. There is no path
+  where a caller can reach another user's document chunks through
+  this service.
+- **Grounded system prompt.** States that retrieved document text is
+  the only source for factual claims, that the model must never
+  invent information absent from context, must explicitly say when
+  context is insufficient, must treat retrieved text as untrusted
+  reference material rather than instructions, must never follow
+  instructions embedded inside retrieved text, and must never claim
+  to have read unretrieved portions of the document. No separate
+  prompt-injection framework — prompt-level instructions only, per
+  the approved design.
+- **Deterministic context format.** Retrieved chunks are numbered
+  (`[Context Chunk 1]`, `[Context Chunk 2]`, ...) in retrieval order
+  exactly as returned by `retrieve_similar_chunks()` — no reordering.
+  Chunk UUIDs, cosine distances, and embeddings are never sent to the
+  LLM; only the chunk text.
+- **Deterministic empty-retrieval behavior.** If
+  `retrieve_similar_chunks()` returns no chunks, `answer_question()`
+  returns a fixed `NO_CONTEXT_ANSWER` string immediately, without
+  calling the LLM at all — chosen over sending empty context and
+  hoping the model says "I don't know," per the project's stated
+  preference for deterministic application behavior.
+- **`top_k` is not duplicated.** `rag_service` passes `top_k` straight
+  through to `retrieve_similar_chunks()`, reusing
+  `retrieval_service.DEFAULT_TOP_K` as its own default — no second
+  top-k constant, no duplicated `[1, MAX_TOP_K]` clamping policy.
+- Added `llm_model` to `backend/app/core/config.py` (default
+  `"gpt-5.4-mini"`, worth re-confirming against current OpenAI
+  documentation at deploy time, same discipline already applied to
+  `embedding_model`'s own default) — a setting distinct from
+  `embedding_model`, sharing the same `openai_api_key`. Corresponding
+  entry added to `backend/.env.example`.
+- **No database schema change, no migration.** RAG is a stateless
+  request/response pipeline over already-existing data; nothing here
+  requires persistence. Alembic head unchanged at `368647c4431f`.
+- Added `backend/tests/test_llm_service.py` — 10 new tests: correct
+  model passed, correct system/user messages passed, generated text
+  returned, provider/timeout/connection errors wrapped as
+  `LLMProviderError`, no provider details leaked, malformed/empty
+  response handled safely, and confirmation the service works with no
+  `OPENAI_API_KEY` set anywhere in the environment.
+- Added `backend/tests/test_rag_service.py` — 10 new tests, following
+  the project's "mock only the external-provider boundary, exercise
+  real orchestration otherwise" philosophy: the question is actually
+  embedded and actually retrieved against real Postgres/pgvector
+  (only the embedding and LLM *clients* are mocked, not the service
+  functions themselves) — covering the full flow, document isolation
+  (two documents with identical chunk embeddings never cross-
+  contaminate an answer), deterministic chunk ordering and numbering
+  in the prompt, grounding/untrusted-context instructions present in
+  the system prompt, empty retrieval returning the fallback without
+  any LLM call, `LLMProviderError` propagation, and `top_k`
+  passthrough to retrieval.
+- **199 backend tests passing overall (179 pre-existing + 20 new),
+  zero regressions.** `alembic current`/`heads` unchanged at
+  `368647c4431f (head)`; `alembic check` — "No new upgrade operations
+  detected." No real OpenAI API call anywhere in the suite; confirmed
+  with `OPENAI_API_KEY` absent from the environment entirely.
+- No HTTP endpoint, no chat persistence (`ChatSession`/`ChatMessage`),
+  no frontend change, no multi-document/global search, no vector
+  index, no Redis/background worker, no provider abstraction, no
+  streaming, no tool calling/agents — all confirmed still out of
+  scope and unimplemented. This milestone adds the internal RAG
+  pipeline only, the foundation single-document chat will eventually
+  call.

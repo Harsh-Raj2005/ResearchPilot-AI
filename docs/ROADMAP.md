@@ -62,9 +62,17 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] No new endpoint, no new migration, no vector index — deliberately deferred
   - [x] Document isolation enforced by construction (join through `DocumentText.document_id`, no cross-document leakage possible)
   - [x] All provider calls mocked in tests — deterministic unit-vector fixtures, no real OpenAI API call
+- [x] RAG Foundation
+  - [x] `rag_service.py` — internal-only `answer_question()` primitive; composes `embed_query()` + `retrieve_similar_chunks()` + `llm_service.generate_answer()`
+  - [x] `llm_service.py` — encapsulates the OpenAI Chat Completions call, single `generate_answer()` function, no provider abstraction
+  - [x] Grounded system prompt: answers only from retrieved context, explicit "insufficient context" fallback, retrieved text treated as untrusted reference material
+  - [x] Empty retrieval returns a deterministic fallback answer without calling the LLM
+  - [x] No new endpoint (Stage A only — a public endpoint is a separate future decision), no new migration, no chat persistence, no frontend change
+  - [x] All provider calls mocked in tests — no real OpenAI API call, no OPENAI_API_KEY required
 
 NEXT (not yet approved/designed):
-- RAG (retrieval + prompt assembly + LLM call)
-- Single-document chat
+- Single-document chat: authenticated HTTP endpoint calling `rag_service.answer_question()` (Stage B)
+- Chat persistence (`ChatSession`/`ChatMessage`, conversation memory)
+- Frontend chat UI
 - Vector index (HNSW/IVFFlat) — once multi-document/large-scale retrieval genuinely needs one
 - Multi-document search (Phase 2)
