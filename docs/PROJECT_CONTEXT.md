@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), Document Chunking, Document Chunks → Embeddings, Vector Retrieval, and RAG Foundation are all fully complete. **This milestone (Single-Document Chat API) exposes the RAG pipeline over HTTP for the first time** — a new authenticated `POST /api/v1/documents/{document_id}/chat` endpoint, thin by design, calls the existing internal `rag_service.answer_question()` unchanged. New request/response schemas (`ChatRequest`/`ChatResponse`); no new migration, no chat persistence, no frontend change. The RAG service, retrieval, embedding, and LLM layers are all consumed as black boxes — none were modified. Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, and the Single-Document Chat API are all fully complete. **This milestone (Chat Persistence) adds real, persisted, multi-turn conversations** — new `ChatSession`/`ChatMessage` models and four new endpoints (create session, list sessions, list messages, send message) under `/documents/{document_id}/chat/sessions...`. `llm_service.generate_answer()` now accepts a full message list (native multi-turn) rather than a single prompt string; a new `rag_service.answer_question_with_history()` sits alongside the unchanged, still-stateless `answer_question()`. The send-message endpoint persists the user's message and the assistant's reply atomically — one commit only after the LLM call succeeds, so a failed generation never leaves a partial conversation. No frontend change yet. Nothing has been deployed yet.
 
 ---
 
@@ -429,6 +429,24 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 **Not yet done, deliberately:** vector index (HNSW/IVFFlat), semantic/similarity search, retrieval, RAG, single-document chat, embedding metadata/versioning columns, background workers, Redis/Arq, automatic retries, provider abstraction, a second embedding provider, any frontend embedding UI, deployment.
 
+### Chat Persistence (this milestone)
+**What it does:** Adds real, persisted, multi-turn conversations on top of the existing RAG pipeline — new `ChatSession`/`ChatMessage` models and four new endpoints under `/documents/{document_id}/chat/sessions...` (create session, list sessions, list a session's messages, send a message).
+
+**Key decisions:**
+- **`ChatSession` carries no `user_id`.** Mirrors the exact precedent `DocumentChunk` already sets by not carrying a redundant `document_id` — ownership is reachable via `session → document → document.user_id`, a single path, not duplicated.
+- **`ChatMessage.sequence_number` is a real, deliberate column, not a speculative one.** `created_at` alone isn't a safe ordering guarantee for a user-message/assistant-reply pair written in quick succession within the same transaction, at typical DB timestamp resolution. Application-assigned (0-based, "read current max, then insert"), with a composite `UniqueConstraint(chat_session_id, sequence_number)` as the database-level guarantee — the same "structural enforcement, not just convention" pattern already established by `DocumentChunk`'s own `(document_text_id, chunk_index)` constraint.
+- **`llm_service.generate_answer()`'s signature changed from `(system_prompt, user_prompt: str)` to `(system_prompt, messages: list[dict])`** — a real, deliberate signature change, not purely additive. This uses OpenAI's actual multi-turn mechanism rather than folding history into one string (which would have relabeled prior assistant turns as generic "context" and lost the model's native role structure). **A real footgun was found and fixed during implementation**: a bare string is technically iterable, so without an explicit guard, passing one to `messages` would have silently unpacked it character-by-character into garbage instead of raising a clear error — `generate_answer()` now raises `TypeError` immediately if `messages` isn't a list, with a dedicated regression test.
+- **`rag_service.answer_question()`'s behavior is unchanged** — confirmed by all 10 of its pre-existing tests passing unmodified. It now calls `generate_answer()` with a one-element `messages` list, behaviorally identical to the old two-message shape it used to build internally. A new `answer_question_with_history()` sits alongside it (not replacing it) for the persisted-conversation path, truncating to the most recent `MAX_HISTORY_MESSAGES` (10) prior turns — older turns are dropped, not summarized (a real, explicit limitation, not silently accepted).
+- **A real atomicity bug was found and fixed before this milestone shipped, not after.** The first implementation had `chat_session_service.append_message()` commit internally — meaning a user's message would be durably persisted *before* the RAG call even ran. If RAG then failed, that message stayed committed from an already-finished transaction, with no way to undo it. Fixed by extracting a private, non-committing `_stage_message()` (mirroring the exact "stage everything, one commit at the end" pattern `document_processing_service.process_document()` already established for text+chunk+embedding persistence): the send-message route now stages the user message, calls RAG, stages the assistant reply only on success, and issues exactly one `db.commit()` — so a failed generation leaves the database exactly as it was before the request, verified by a dedicated HTTP-level atomicity test reproducing the test client's known `get_db`-override rollback gap (the same technique already used for the Document Chunks → Embeddings milestone's own `502` test).
+- **Nested ownership check, not just document ownership.** Every session-scoped route (list messages, send message) checks both that the document is owned by the caller *and* that the session actually belongs to that document (`chat_session_service.get_session_for_document()`) — a session ID alone is guessable/enumerable, so scoping only by session ID would be a real IDOR vulnerability. Verified by two dedicated tests: a session genuinely owned by the same user, but reached via a *different* document's URL, still returns `404`.
+- **The existing stateless `POST /documents/{document_id}/chat` endpoint is completely unchanged** — Chat Persistence is additive, not a replacement. A client that wants a single fire-and-forget question keeps using it; a client that wants a remembered conversation uses the new session endpoints.
+
+**Files:** New — `backend/app/models/chat_session.py`, `backend/app/models/chat_message.py`, `backend/alembic/versions/f54da3d255ec_add_chat_sessions_and_messages.py`, `backend/app/services/chat_session_service.py`, `backend/tests/test_chat_session_model.py`, `backend/tests/test_chat_session_service.py`, `backend/tests/test_chat_persistence_api.py`. Modified — `backend/app/models/__init__.py` (registers both new models), `backend/app/services/llm_service.py` (message-list signature + `TypeError` guard), `backend/app/services/rag_service.py` (adds `answer_question_with_history()`, `MAX_HISTORY_MESSAGES`), `backend/app/schemas/chat.py` (adds `ChatSessionResponse`/`ChatMessageResponse`/`SendMessageRequest`), `backend/app/api/documents.py` (adds the four new routes), `backend/tests/test_llm_service.py` (all call sites updated for the new signature, +2 new tests), `backend/tests/test_rag_service.py` (+8 new tests for `answer_question_with_history()`).
+
+**Tests:** 74 new (11 model, 21 service, 32 HTTP-level, 8 `rag_service` history tests, 2 `llm_service` signature/guard tests), plus every existing call site in `test_llm_service.py` updated for the new signature. **285 backend tests passing overall, zero regressions.** No real OpenAI API call anywhere in the suite.
+
+**Not yet done, deliberately:** frontend chat UI, conversation summarization, session titles/renaming, multi-document sessions, streaming responses, message editing/deletion, soft-delete/archival of sessions, any new vector index.
+
 ---
 
 ## 8. AUTHENTICATION FLOW
@@ -439,7 +457,7 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 ## 9. API ENDPOINTS
 
-**One new route this milestone** — `POST /api/v1/documents/{document_id}/chat`, the first HTTP-facing surface for the RAG pipeline. All prior routes are unchanged in shape and behavior.
+**Four new routes this milestone** — the persistent chat session/message surface, layered on top of the existing stateless `POST /api/v1/documents/{document_id}/chat`, which is unchanged. All prior routes are unchanged in shape and behavior.
 
 | Method | Route | Purpose | Auth required? |
 |---|---|---|---|
@@ -453,8 +471,12 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 | DELETE | `/api/v1/documents/{document_id}` | Delete a document (file + DB row) | **Yes** |
 | POST | `/api/v1/documents/{document_id}/process` | Parse the document, persist extracted text, chunks, and their embeddings (atomically); reprocesses (replacing all three) if already processed | **Yes** |
 | POST | `/api/v1/documents/{document_id}/chat` | Ask one question about one owned document; returns `{"answer": "..."}`. Stateless — no conversation history. | **Yes** |
+| POST | `/api/v1/documents/{document_id}/chat/sessions` | Create a new, empty chat session for a document | **Yes** |
+| GET | `/api/v1/documents/{document_id}/chat/sessions` | List a document's chat sessions, newest first, paginated | **Yes** |
+| GET | `/api/v1/documents/{document_id}/chat/sessions/{session_id}/messages` | Return a session's full transcript, in conversation order | **Yes** |
+| POST | `/api/v1/documents/{document_id}/chat/sessions/{session_id}/messages` | Send a message within a persisted session; persists both turns atomically, returns the new assistant message | **Yes** |
 
-`docs/API.md` updated this milestone — new "Chat (RAG)" section documenting the endpoint's request/response shape and full error mapping (`401`/`404`/`422`/`502`).
+`docs/API.md` updated this milestone — new "Chat Persistence" section documenting all four endpoints, request/response shapes, and full error mapping (`401`/`404`/`422`/`502`).
 
 ---
 
@@ -542,55 +564,61 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - **Vector Retrieval — internal `retrieval_service.retrieve_similar_chunks()` primitive; pgvector cosine-distance search scoped to a single, authorized document; `embedding_service.embed_query()` added for single-text embedding. Complete.**
 - **RAG Foundation — internal `rag_service.answer_question()` primitive; composes `embed_query()` + `retrieve_similar_chunks()` + a new `llm_service.generate_answer()` into a single-document Q&A pipeline. Complete.**
 - **Single-Document Chat API — thin authenticated `POST /api/v1/documents/{document_id}/chat` endpoint exposing `rag_service.answer_question()` over HTTP; new `ChatRequest`/`ChatResponse` schemas. Complete.**
+- **Chat Persistence — `ChatSession`/`ChatMessage` models; four new endpoints for creating sessions, listing sessions, sending messages, and retrieving history; history-aware RAG via `rag_service.answer_question_with_history()`; native multi-turn `llm_service.generate_answer()`; atomic user+assistant message persistence. Complete.**
 
-**Git state:** everything through this milestone was implemented on top of the real, committed `0bf7de2` (`feat: add RAG foundation`, branch `main`). This milestone's changes remain uncommitted, per its own instructions. `alembic current`/`heads`/`check` were re-verified (unchanged — no schema change this milestone); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact change surface.
+**Git state:** everything through this milestone was implemented on top of the real, committed `0bf7de2` (`feat: add RAG foundation`, branch `main`), on top of the still-uncommitted Single-Document Chat API changes already in this working tree. This milestone's changes remain uncommitted, per its own instructions. `alembic current`/`heads`/`check` were re-verified (head moved to `f54da3d255ec`, the new migration); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact change surface.
 
 **Not started at all:**
 - Automatic parsing on upload — deliberately not built; a confirmed design decision, not an oversight.
 - DOCX/TXT extraction.
-- Chat persistence (`ChatSession`/`ChatMessage` models, conversation memory) — this milestone is stateless, single-question only.
-- Frontend chat UI.
+- Frontend chat UI — the persisted-conversation backend now exists, but no UI consumes it yet.
 - Vector index (HNSW/IVFFlat) — deferred until multi-document/large-scale retrieval genuinely needs one.
 - Background worker, Redis, Arq.
 - Any status/processing-state column, parser/chunk/embedding versioning.
 - Multi-document/global semantic search (Phase 2).
 - Document detail page, PDF viewer/annotation, any research-workspace UI.
+- Session titles, message editing/deletion, conversation summarization, streaming responses — all deliberately deferred (see Section 11's decisions on this milestone).
 - Citations/sources schema — deliberately deferred, separate future milestone.
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None. Single-Document Chat API is complete and fully verified for its approved, deliberately narrow scope — one stateless authenticated endpoint over the existing RAG pipeline, unchanged. No RAG/retrieval/embedding/LLM service was modified.
+**Partially completed work:** None. Chat Persistence is complete and fully verified for its approved scope — persisted multi-turn conversations per document, atomic message writes, bounded history sent to the LLM, no frontend surface.
 
 ---
 
 ## 13. NEXT TASK
 
-**Single-Document Chat API is now complete.** A user can authenticate, own a processed document, and ask it one question over HTTP — but there is still no way to remember a conversation, and no frontend UI calls this endpoint yet. The natural next milestones, none yet designed or approved, include: chat persistence (`ChatSession`/`ChatMessage` models) to remember a conversation across requests, a frontend chat UI consuming this endpoint, DOCX/TXT text extraction, or a first deployment pass. This section intentionally does not commit to one over the others, since no design-review conversation has happened yet for whichever comes next.
+**Chat Persistence is now complete.** A user can create a named conversation, send messages, and have prior turns genuinely inform the LLM's answer — but nothing in the frontend calls any of this yet. The natural next milestone is a frontend chat UI consuming the four new endpoints (session list/create, send message, history), though DOCX/TXT text extraction and a first deployment pass remain open, undesigned alternatives. This section intentionally does not commit to one over the others, since no design-review conversation has happened yet for whichever comes next.
 
-**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, and Single-Document Chat API (do not re-litigate without a new reason):**
+**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, Single-Document Chat API, and Chat Persistence (do not re-litigate without a new reason):**
 - Separate `document_texts` table, not a `Document` column; separate `document_chunks` table, FK'd to `document_texts`, not `documents`.
 - 1:0..1 (`DocumentText`) / 1:many (`DocumentChunk`) via constraints, no versioning on either.
-- No status column, no `relationship()` anywhere.
-- Dedicated `document_text_service.py`, `chunk_service.py`, `document_processing_service.py`, `embedding_service.py`, `retrieval_service.py`, `llm_service.py`, and `rag_service.py` — each a focused file, not folded together.
+- No status column, no `relationship()` anywhere — including on `ChatSession`/`ChatMessage`.
+- Dedicated `document_text_service.py`, `chunk_service.py`, `document_processing_service.py`, `embedding_service.py`, `retrieval_service.py`, `llm_service.py`, `rag_service.py`, and `chat_session_service.py` — each a focused file, not folded together.
 - `DocumentText` uses upsert (update-in-place); `DocumentChunk` uses delete-then-recreate — different strategies, each justified by whether a stable row correspondence exists.
-- Text, chunk, and embedding persistence happen in **one transaction**, via `document_processing_service.process_document()` — not independent commits.
+- Text, chunk, and embedding persistence happen in **one transaction**, via `document_processing_service.process_document()` — not independent commits. The same "stage everything, one commit at the end" pattern is now also used by the send-message chat route (see Section 11's Chat Persistence decisions).
 - No public, self-committing chunking or embedding API — only pure/private primitives exist; avoid adding a speculative public entry point without a real second caller.
 - The chunking algorithm is character-count-based and fully deterministic — no tokenizer/NLP dependency added.
 - OpenAI `text-embedding-3-small` (1536 dims) for embeddings and a distinct `llm_model` setting for generation — never confused, both encapsulated entirely inside their own service file — no provider abstraction, no second provider for either.
 - `DocumentChunk.embedding` is `NOT NULL` — embeddings are always generated before chunk rows are constructed.
+- **`ChatMessage.sequence_number` is application-assigned (0-based), not `created_at`-based** — a composite `UniqueConstraint(chat_session_id, sequence_number)` is the database-level guarantee, mirroring `DocumentChunk`'s own `(document_text_id, chunk_index)` pattern.
+- **`ChatSession` carries no `user_id`** — ownership is derived via `session → document → document.user_id`, mirroring `DocumentChunk`'s own "no redundant FK" precedent.
 - Processing (parsing, chunking, embedding) is triggered by the existing explicit `/process` endpoint, not automatically on upload, and not via separate endpoints for each stage.
 - The process endpoint returns `DocumentResponse`, never `DocumentText`, extracted text, chunk data, or embedding vectors.
-- `rag_service.answer_question()` accepts an already-authorized `Document`, performs zero ownership checks of its own — the exact same pattern already established by `document_text_service` and `retrieval_service`.
+- `rag_service.answer_question()`/`answer_question_with_history()` accept an already-authorized `Document`, perform zero ownership checks of their own — the exact same pattern already established by `document_text_service` and `retrieval_service`.
 - Empty retrieval returns a deterministic fallback answer (`rag_service.NO_CONTEXT_ANSWER`) without ever calling the LLM — chosen over sending empty context and hoping the model says "I don't know."
 - `retrieval_service.DEFAULT_TOP_K`/`MAX_TOP_K` remain the single source of truth for top-k policy — `rag_service` passes `top_k` through unchanged, no second clamping policy.
-- **`POST /documents/{document_id}/chat` treats `rag_service` as a black box** — the router performs authentication, ownership resolution, and error mapping only; no embedding, retrieval, prompt construction, or LLM logic was moved into the router.
-- **`LLMProviderError` → `502`** at the chat endpoint, mirroring the existing `EmbeddingProviderError` → `502` precedent on `/process` — same generic-message, no-provider-leak treatment.
-- **The chat endpoint is stateless** — no conversation ID, no history, no session; each request is independent.
+- **`llm_service.generate_answer()` takes a `messages: list[dict]` (native multi-turn), not a single `user_prompt` string** — a real signature change, with an explicit `TypeError` guard against the "bare string silently unpacks character-by-character" footgun.
+- **`rag_service.MAX_HISTORY_MESSAGES = 10`** — only the most recent N prior messages are sent to the LLM; older turns are truncated, not summarized.
+- **The send-message chat route persists the user message and assistant reply atomically** — both staged via `chat_session_service._stage_message()` (flush only), one `db.commit()` after RAG succeeds. A failed generation leaves the database exactly as it was before the request.
+- **Every session-level chat route nests two ownership checks**: document ownership (`get_document_for_user()`), then session-belongs-to-that-document (`get_session_for_document()`) — both collapsing to an identical `404`, since a session ID alone is guessable/enumerable.
+- `LLMProviderError` → `502` at both the stateless and session-based chat endpoints, mirroring the existing `EmbeddingProviderError` → `502` precedent on `/process` — same generic-message, no-provider-leak treatment.
+- The stateless `POST /documents/{document_id}/chat` endpoint remains unchanged and available alongside the new session-based endpoints — not replaced, not deprecated.
 - No document detail page — list rows already show everything `DocumentResponse` provides.
 - No persisted "processed" status anywhere, frontend or backend — the backend doesn't track one.
 - A `401` from any authenticated frontend call triggers logout + redirect to `/login`.
 - No vector index yet — deferred until multi-document/large-scale retrieval genuinely needs one.
-- No HTTP client library, form library, CSS framework, or tokenizer/NLP dependency introduced anywhere in this project so far.
+- No HTTP client library, form library, CSS framework, tokenizer/NLP dependency, or summarization library introduced anywhere in this project so far.
 
 ---
 
@@ -598,7 +626,7 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 - **Phase 1 (current, in progress — target end state):** single-document upload + chat, deployed.
   - Auth ✅ done.
-  - Protected-route dependency (`get_current_user`) ✅ done, consumed by 7 routes.
+  - Protected-route dependency (`get_current_user`) ✅ done, consumed by 11 routes.
   - **Task 3B (Document Management backend, upload-only scope) ✅ done.**
   - **Document Management CRUD ✅ done** (list, detail, download, delete).
   - **Document Text Extraction Checkpoints 1–5 ✅ done** — parser, schema, parse-to-persist integration, explicit processing endpoint (`POST /documents/{document_id}/process`); upload remains unmodified.
@@ -608,7 +636,7 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
   - **Vector Retrieval ✅ done** — internal `retrieval_service.retrieve_similar_chunks()` primitive; pgvector cosine-distance search; no new endpoint, no frontend change.
   - **RAG Foundation ✅ done** — internal `rag_service.answer_question()` primitive composing embedding + retrieval + a new `llm_service.generate_answer()`; no new endpoint, no chat persistence, no frontend change.
   - **Single-Document Chat API ✅ done** — `POST /api/v1/documents/{document_id}/chat`, thin and stateless, exposing `rag_service.answer_question()` over HTTP; no chat persistence, no frontend change.
-  - Chat persistence (`ChatSession`/`ChatMessage`) — not started.
+  - **Chat Persistence ✅ done** — `ChatSession`/`ChatMessage` models, four new session/message endpoints, history-aware RAG, atomic message writes; no frontend change.
   - Frontend chat UI — not started.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.

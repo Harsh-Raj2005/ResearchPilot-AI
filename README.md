@@ -71,9 +71,21 @@ pipeline over HTTP.** Authenticated, ownership-checked via the
 existing pattern, stateless (no conversation history, no session) —
 one question in, `{"answer": "..."}` out. The router treats
 `rag_service` as a black box: no embedding, retrieval, prompt
-construction, or LLM logic lives in the endpoint itself. A frontend
-chat UI and persisted conversation history remain separate,
-not-yet-implemented future milestones. See
+construction, or LLM logic lives in the endpoint itself.
+
+**Conversations now persist.** New `ChatSession`/`ChatMessage`
+tables back four new endpoints — create a session, list sessions,
+send a message, and retrieve history — all nested under
+`/documents/{document_id}/chat/sessions...` and scoped by both
+document and session ownership. Sending a message persists the
+user's question and the assistant's reply atomically (one commit,
+only after the LLM call succeeds), and passes the session's recent
+history (up to the last 10 messages) into the LLM via a native
+multi-turn message list, so follow-up questions are actually
+answered with conversational context. The original stateless
+`POST /documents/{document_id}/chat` endpoint is unchanged and
+still available. A frontend chat UI remains a separate,
+not-yet-implemented future milestone. See
 `docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
 for the task-by-task history.
 

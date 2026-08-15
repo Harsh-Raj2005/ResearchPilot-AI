@@ -217,3 +217,72 @@ If the document has no relevant chunks (e.g. it has not been processed yet, or i
 **Response `502`** — the LLM provider failed (network error, timeout, API error, or an unexpected/malformed response). The response body is a generic message only — no raw provider error text, response body, or API key ever reaches the client.
 
 _This is a stateless single-question endpoint — there is no conversation history, session, or memory. Chat persistence and a frontend chat UI are separate, not-yet-implemented future milestones._
+
+---
+
+## Chat Persistence (sessions and messages)
+
+A persisted, multi-turn conversation about one document. Unlike `POST /documents/{document_id}/chat` above (a single stateless question), these four endpoints let a client create a named conversation, send a sequence of messages to it, and retrieve the full transcript. All require `Authorization: Bearer <access_token>`.
+
+Every route below performs two nested ownership checks: first that `document_id` exists and is owned by the caller (identical to every other `{document_id}` route), then — for the two `{session_id}` routes — that the session actually belongs to that document. A session that exists but belongs to a different document (even one owned by the same user) returns the same `404` as a session that does not exist at all; a session ID alone is never sufficient to reach a session's data.
+
+### `POST /documents/{document_id}/chat/sessions`
+Create a new, empty chat session for a document.
+
+**Response `201`**
+```json
+{ "id": "uuid", "created_at": "2026-01-01T00:00:00Z" }
+```
+
+**Response `401`** — missing or invalid token
+**Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user
+**Response `422`** — `document_id` is not a valid UUID
+
+### `GET /documents/{document_id}/chat/sessions`
+List a document's chat sessions, newest first. Plain `skip`/`limit` pagination, same convention as `GET /documents`.
+
+**Response `200`**
+```json
+[ { "id": "uuid", "created_at": "2026-01-01T00:00:00Z" } ]
+```
+
+**Response `401`** — missing or invalid token
+**Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user
+
+### `GET /documents/{document_id}/chat/sessions/{session_id}/messages`
+Return a chat session's full transcript, in conversation order.
+
+**Response `200`**
+```json
+[
+  { "id": "uuid", "role": "user", "content": "What is the main contribution?", "sequence_number": 0, "created_at": "..." },
+  { "id": "uuid", "role": "assistant", "content": "...", "sequence_number": 1, "created_at": "..." }
+]
+```
+
+**Response `401`** — missing or invalid token
+**Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user, *or* no session with this ID exists under this document (including a session that genuinely exists but belongs to a different document)
+**Response `422`** — `document_id` or `session_id` is not a valid UUID
+
+### `POST /documents/{document_id}/chat/sessions/{session_id}/messages`
+Send a message within a persisted chat session. Persists the user's message, calls the RAG pipeline with the session's prior transcript (bounded to the most recent messages — older turns are truncated, not summarized), persists the assistant's reply, and returns the assistant's message. The user's own message is not echoed back in the response — the client already has its content from the request it just sent; it is visible on the next `GET .../messages` call.
+
+The user's message and the assistant's reply are persisted atomically: if the LLM call fails, neither message is durably saved — there is never a committed state with a user question but no assistant reply, and never a fabricated assistant reply on its own.
+
+**Request**
+```json
+{ "question": "And what about the methodology?" }
+```
+`question` must not be missing, empty, or whitespace-only.
+
+**Response `201`**
+```json
+{ "id": "uuid", "role": "assistant", "content": "...", "sequence_number": 3, "created_at": "..." }
+```
+
+**Response `401`** — missing or invalid token
+**Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user, *or* no session with this ID exists under this document
+**Response `422`** — `document_id`/`session_id` is not a valid UUID, *or* `question` is missing, empty, or whitespace-only
+**Response `502`** — the LLM provider failed. Generic message only — no raw provider error text, response body, or API key ever reaches the client.
+
+_These endpoints are the persistence layer on top of the same RAG pipeline `POST /documents/{document_id}/chat` already uses — that stateless endpoint is unchanged and remains available alongside sessions. A frontend chat UI is a separate, not-yet-implemented future milestone._

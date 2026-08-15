@@ -77,9 +77,19 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] `LLMProviderError` → `502`, mirroring the existing `EmbeddingProviderError` → `502` precedent
   - [x] No database migration, no chat persistence, no frontend change
   - [x] All RAG/LLM calls mocked in tests — no real OpenAI API call, no OPENAI_API_KEY required
+- [x] Chat Persistence
+  - [x] `ChatSession`/`ChatMessage` models — sessions belong to a `Document` (no redundant `user_id`), messages belong to a `ChatSession`, both `ON DELETE CASCADE`
+  - [x] `ChatMessage.sequence_number` — application-assigned ordering, `UniqueConstraint(chat_session_id, sequence_number)` enforced at the DB level
+  - [x] `chat_session_service.py` — session/message CRUD; nested ownership check (`get_session_for_document`) so a session ID alone can never be reached without also owning its parent document
+  - [x] `llm_service.generate_answer()` extended to accept a full message list (native multi-turn), not just one prompt string — `rag_service.answer_question()`'s existing stateless behavior is unchanged
+  - [x] `rag_service.answer_question_with_history()` — new, alongside the unchanged `answer_question()`; truncates to the most recent `MAX_HISTORY_MESSAGES` (10) prior turns
+  - [x] Four new endpoints: create session, list sessions, list messages, send message — all under `/documents/{document_id}/chat/sessions...`
+  - [x] Atomic send-message persistence: user message and assistant reply staged together, one commit only after the LLM call succeeds — no partial state on failure
+  - [x] No new frontend, no vector index change, no summarization
+  - [x] All RAG/LLM calls mocked in tests — no real OpenAI API call, no OPENAI_API_KEY required
 
 NEXT (not yet approved/designed):
-- Chat persistence (`ChatSession`/`ChatMessage`, conversation memory)
 - Frontend chat UI
+- Conversation summarization for long sessions
 - Vector index (HNSW/IVFFlat) — once multi-document/large-scale retrieval genuinely needs one
 - Multi-document search (Phase 2)

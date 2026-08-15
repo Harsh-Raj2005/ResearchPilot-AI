@@ -32,9 +32,16 @@ from app.core.config import settings
 from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.schemas.chat import (
+    ChatMessageResponse,
+    ChatRequest,
+    ChatResponse,
+    ChatSessionResponse,
+    SendMessageRequest,
+)
 from app.schemas.document import DocumentResponse
 from app.services import (
+    chat_session_service,
     document_processing_service,
     document_service,
     embedding_service,
@@ -357,3 +364,197 @@ async def chat_with_document(
         ) from exc
 
     return ChatResponse(answer=answer)
+
+
+@router.post(
+    "/{document_id}/chat/sessions",
+    response_model=ChatSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_chat_session(
+    document_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChatSessionResponse:
+    """
+    Create a new, empty chat session for a document owned by the
+    authenticated user — Chat Persistence milestone.
+
+    Same indistinguishable-404 behavior as every other
+    {document_id} route, via the existing get_document_for_user()
+    ownership check, reused as-is.
+    """
+    document = await document_service.get_document_for_user(
+        db, document_id=document_id, user_id=current_user.id
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
+    session = await chat_session_service.create_session(db, document=document)
+    return ChatSessionResponse.model_validate(session)
+
+
+@router.get(
+    "/{document_id}/chat/sessions",
+    response_model=list[ChatSessionResponse],
+)
+async def list_chat_sessions(
+    document_id: uuid.UUID,
+    skip: int = Query(0, ge=0, description="Number of sessions to skip"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum sessions to return"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ChatSessionResponse]:
+    """
+    List a document's chat sessions, newest first — Chat
+    Persistence milestone. Same plain skip/limit pagination
+    convention already established by GET /documents.
+    """
+    document = await document_service.get_document_for_user(
+        db, document_id=document_id, user_id=current_user.id
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
+    sessions = await chat_session_service.list_sessions_for_document(
+        db, document=document, skip=skip, limit=limit
+    )
+    return [ChatSessionResponse.model_validate(session) for session in sessions]
+
+
+@router.get(
+    "/{document_id}/chat/sessions/{session_id}/messages",
+    response_model=list[ChatMessageResponse],
+)
+async def list_chat_messages(
+    document_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ChatMessageResponse]:
+    """
+    Return a chat session's full transcript, in conversation order
+    — Chat Persistence milestone.
+
+    Two nested ownership checks, both collapsing to the same 404:
+    first that document_id exists and is owned by the caller (the
+    existing get_document_for_user() check), then that session_id
+    actually belongs to that document (chat_session_service.
+    get_session_for_document()). A session_id alone is
+    guessable/enumerable, so every session-level route is scoped
+    through its parent document, not just through session_id.
+    """
+    document = await document_service.get_document_for_user(
+        db, document_id=document_id, user_id=current_user.id
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
+    session = await chat_session_service.get_session_for_document(
+        db, document=document, session_id=session_id
+    )
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Chat session not found"
+        )
+
+    messages = await chat_session_service.list_messages_for_session(db, session=session)
+    return [ChatMessageResponse.model_validate(message) for message in messages]
+
+
+@router.post(
+    "/{document_id}/chat/sessions/{session_id}/messages",
+    response_model=ChatMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def send_chat_message(
+    document_id: uuid.UUID,
+    session_id: uuid.UUID,
+    request: SendMessageRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChatMessageResponse:
+    """
+    Send a message within a persisted chat session — Chat
+    Persistence milestone. Persists the user's message, calls
+    rag_service.answer_question_with_history() with the session's
+    prior transcript, persists the assistant's reply, and returns
+    the assistant's newly-created ChatMessageResponse (the user's
+    own message is not echoed back — the client already has its
+    content from the request it just sent).
+
+    Same nested-ownership pattern as list_chat_messages() above:
+    document ownership, then session-belongs-to-document, both
+    collapsing to an identical 404.
+
+    The user's message and the assistant's reply are persisted
+    atomically: both are staged (flushed, not committed) and a
+    single db.commit() only happens after RAG has actually
+    succeeded. If the RAG/LLM call fails, nothing commits at all —
+    the staged user message is rolled back along with everything
+    else, via get_db's existing implicit rollback-on-exception (the
+    same guarantee this project has relied on since the Document
+    Chunks -> Embeddings milestone). There is never a committed
+    state with a user question but no assistant reply, and never a
+    fabricated assistant reply persisted on its own.
+
+    Error mapping identical to POST /chat above: LLMProviderError
+    -> 502, generic message, no raw provider text leaked.
+    """
+    document = await document_service.get_document_for_user(
+        db, document_id=document_id, user_id=current_user.id
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
+    session = await chat_session_service.get_session_for_document(
+        db, document=document, session_id=session_id
+    )
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Chat session not found"
+        )
+
+    prior_messages = await chat_session_service.list_messages_for_session(db, session=session)
+    history = [{"role": message.role, "content": message.content} for message in prior_messages]
+
+    # Stage (flush, not commit) the user message before calling RAG.
+    # If the RAG/LLM call below fails, nothing has been committed yet
+    # -- FastAPI's get_db dependency rolls back the whole session on
+    # the propagating exception, so the staged user message never
+    # becomes durably visible either. This mirrors the exact
+    # "stage everything, commit once at the end" pattern
+    # document_processing_service.process_document() already
+    # established for text+chunk+embedding persistence -- the user
+    # message and the assistant reply become durable together, or
+    # not at all; there is no possible committed state with a user
+    # question but no assistant reply, and no possible committed
+    # state with a fabricated assistant reply and no user question.
+    await chat_session_service._stage_message(
+        db, session=session, role="user", content=request.question
+    )
+
+    try:
+        answer = await rag_service.answer_question_with_history(
+            db, document=document, question=request.question, history=history
+        )
+    except llm_service.LLMProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Answer generation failed. Please try again.",
+        ) from exc
+
+    assistant_message = await chat_session_service._stage_message(
+        db, session=session, role="assistant", content=answer
+    )
+    await db.commit()
+    await db.refresh(assistant_message)
+    return ChatMessageResponse.model_validate(assistant_message)

@@ -15,13 +15,25 @@ project's standing "no speculative abstraction" principle.
 
 Uses the Chat Completions API (client.chat.completions.create), not
 the newer Responses API — Chat Completions is the simplest fit for
-this milestone's exact shape (system instruction + user prompt ->
-text answer); nothing here needs tool calling, multi-turn state, or
-agentic behavior, all of which are explicitly out of scope.
+this milestone's exact shape (system instruction + a list of turns ->
+text answer); nothing here needs tool calling or agentic behavior.
 
 model is read from settings.llm_model — a distinct setting from
 settings.embedding_model (the embedding and generation models are
 never the same model and must never be confused).
+
+Chat Persistence milestone: generate_answer()'s signature changed
+from (system_prompt, user_prompt) to (system_prompt, messages) — a
+real, deliberate signature change, not a purely additive one. This
+module now uses OpenAI's actual multi-turn mechanism (a list of
+{"role", "content"} turns) rather than folding conversation history
+into one large string, which would have relabeled prior assistant
+turns as generic "context" and lost the model's native structure for
+distinguishing them. rag_service.answer_question() (the existing
+stateless single-question path) is unchanged in behavior — it now
+calls this function with messages=[{"role": "user", "content":
+user_prompt}], a one-element list, which is behaviorally identical to
+the old two-message shape this function used to build internally.
 """
 from openai import AsyncOpenAI, OpenAIError
 
@@ -51,16 +63,26 @@ def _get_client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=settings.openai_api_key)
 
 
-async def generate_answer(system_prompt: str, user_prompt: str) -> str:
+async def generate_answer(system_prompt: str, messages: list[dict[str, str]]) -> str:
     """
-    Sends a prepared system instruction and user prompt to the
-    configured generation model and returns the generated answer text.
+    Sends a system instruction plus a list of conversation turns to
+    the configured generation model and returns the generated answer
+    text.
 
-    This function has no knowledge of documents, chunks, retrieval, or
-    RAG — it is a narrow, generic "send this prompt, get this answer"
-    boundary. All prompt construction (grounding rules, context
-    formatting, chunk selection) is rag_service's responsibility, not
-    this module's.
+    `messages` is a list of {"role": "user"|"assistant", "content":
+    str} dicts, in chronological order — the full conversation history
+    (already truncated/selected by the caller, e.g. rag_service) plus
+    the current turn as its final element. This function does not
+    truncate, reorder, or otherwise interpret `messages` itself; it
+    only prepends the system prompt and sends exactly what it's given.
+    A single-question caller (no history) simply passes a one-element
+    list: [{"role": "user", "content": the_question_or_prompt}].
+
+    This function has no knowledge of documents, chunks, retrieval,
+    RAG, or chat sessions — it is a narrow, generic "send this
+    system prompt and message list, get this answer" boundary. All
+    prompt construction (grounding rules, context formatting, history
+    selection) is the caller's responsibility, not this module's.
 
     Raises LLMProviderError for any provider/network/timeout failure
     (including a failure raised while constructing the client itself),
@@ -68,14 +90,22 @@ async def generate_answer(system_prompt: str, user_prompt: str) -> str:
     defensive check — mirrors embedding_service.embed_texts()'s
     equivalent malformed-response handling).
     """
+    if isinstance(messages, str):
+        # A bare string is technically iterable, so without this check
+        # `*messages` below would silently unpack it character-by-
+        # character into garbage "messages" instead of raising a clear
+        # error — a real footgun for any caller migrating from the
+        # old (system_prompt, user_prompt: str) signature. Fail loudly
+        # and immediately instead.
+        raise TypeError(
+            "generate_answer() expects messages: list[dict[str, str]], not a raw string"
+        )
+
     try:
         client = _get_client()
         response = await client.chat.completions.create(
             model=settings.llm_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=[{"role": "system", "content": system_prompt}, *messages],
         )
     except OpenAIError as exc:
         raise LLMProviderError("Answer generation failed.") from exc

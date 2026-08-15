@@ -5,6 +5,12 @@ No real OpenAI API call is ever made — every test monkeypatches
 llm_service._get_client() to return a fake client whose
 `.chat.completions.create()` is under full test control. No
 OPENAI_API_KEY or network access is required to run this file.
+
+Chat Persistence milestone: generate_answer()'s second parameter
+changed from a single user_prompt string to a messages list — every
+call site in this file now passes a proper
+[{"role": "user", "content": ...}] list, matching real callers
+(rag_service.answer_question() / answer_question_with_history()).
 """
 from types import SimpleNamespace
 
@@ -52,6 +58,10 @@ def _patch_client(monkeypatch, fake_client):
     monkeypatch.setattr(llm_service, "_get_client", lambda: fake_client)
 
 
+def _one_message(content: str) -> list[dict[str, str]]:
+    return [{"role": "user", "content": content}]
+
+
 # --- 1. Correct model is passed ---
 
 
@@ -59,24 +69,45 @@ async def test_generate_answer_uses_configured_model(monkeypatch):
     fake_client = _FakeClient(content="The answer.")
     _patch_client(monkeypatch, fake_client)
 
-    await llm_service.generate_answer("system instructions", "user question")
+    await llm_service.generate_answer("system instructions", _one_message("user question"))
 
     assert fake_client.chat.completions.calls[0]["model"] == settings.llm_model
 
 
-# --- 2. Correct system/user messages are passed ---
+# --- 2. Correct system + message-list turns are passed ---
 
 
 async def test_generate_answer_sends_correct_messages(monkeypatch):
     fake_client = _FakeClient(content="The answer.")
     _patch_client(monkeypatch, fake_client)
 
-    await llm_service.generate_answer("be helpful and grounded", "what is X?")
+    await llm_service.generate_answer("be helpful and grounded", _one_message("what is X?"))
 
     messages = fake_client.chat.completions.calls[0]["messages"]
     assert messages == [
         {"role": "system", "content": "be helpful and grounded"},
         {"role": "user", "content": "what is X?"},
+    ]
+
+
+async def test_generate_answer_sends_full_multi_turn_history_in_order(monkeypatch):
+    fake_client = _FakeClient(content="The answer.")
+    _patch_client(monkeypatch, fake_client)
+
+    history_and_question = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "follow-up question"},
+    ]
+
+    await llm_service.generate_answer("system prompt", history_and_question)
+
+    messages = fake_client.chat.completions.calls[0]["messages"]
+    assert messages == [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "follow-up question"},
     ]
 
 
@@ -87,7 +118,7 @@ async def test_generate_answer_returns_generated_text(monkeypatch):
     fake_client = _FakeClient(content="This is the generated answer.")
     _patch_client(monkeypatch, fake_client)
 
-    result = await llm_service.generate_answer("system", "question")
+    result = await llm_service.generate_answer("system", _one_message("question"))
 
     assert result == "This is the generated answer."
 
@@ -101,7 +132,7 @@ async def test_generate_answer_wraps_api_error(monkeypatch):
     _patch_client(monkeypatch, fake_client)
 
     with pytest.raises(llm_service.LLMProviderError):
-        await llm_service.generate_answer("system", "question")
+        await llm_service.generate_answer("system", _one_message("question"))
 
 
 async def test_generate_answer_wraps_timeout_error(monkeypatch):
@@ -110,7 +141,7 @@ async def test_generate_answer_wraps_timeout_error(monkeypatch):
     _patch_client(monkeypatch, fake_client)
 
     with pytest.raises(llm_service.LLMProviderError):
-        await llm_service.generate_answer("system", "question")
+        await llm_service.generate_answer("system", _one_message("question"))
 
 
 async def test_generate_answer_wraps_connection_error(monkeypatch):
@@ -119,7 +150,7 @@ async def test_generate_answer_wraps_connection_error(monkeypatch):
     _patch_client(monkeypatch, fake_client)
 
     with pytest.raises(llm_service.LLMProviderError):
-        await llm_service.generate_answer("system", "question")
+        await llm_service.generate_answer("system", _one_message("question"))
 
 
 async def test_generate_answer_wraps_client_construction_error(monkeypatch):
@@ -146,7 +177,7 @@ async def test_generate_answer_wraps_client_construction_error(monkeypatch):
     monkeypatch.setattr(llm_service, "_get_client", _failing_get_client)
 
     with pytest.raises(llm_service.LLMProviderError):
-        await llm_service.generate_answer("system", "question")
+        await llm_service.generate_answer("system", _one_message("question"))
 
 
 # --- 5. No provider details are leaked ---
@@ -162,7 +193,7 @@ async def test_generate_answer_does_not_leak_provider_details(monkeypatch):
     _patch_client(monkeypatch, fake_client)
 
     with pytest.raises(llm_service.LLMProviderError) as exc_info:
-        await llm_service.generate_answer("system", "question")
+        await llm_service.generate_answer("system", _one_message("question"))
 
     assert "sensitive internal provider detail" not in str(exc_info.value)
     assert "abc123" not in str(exc_info.value)
@@ -170,6 +201,7 @@ async def test_generate_answer_does_not_leak_provider_details(monkeypatch):
 
 async def test_generate_answer_handles_malformed_response_safely(monkeypatch):
     fake_client = _FakeClient(content=None)
+
     # Simulate a response with no choices at all — a malformed/
     # unexpected provider response shape.
     async def _malformed_create(*, model, messages):
@@ -179,7 +211,7 @@ async def test_generate_answer_handles_malformed_response_safely(monkeypatch):
     _patch_client(monkeypatch, fake_client)
 
     with pytest.raises(llm_service.LLMProviderError):
-        await llm_service.generate_answer("system", "question")
+        await llm_service.generate_answer("system", _one_message("question"))
 
 
 async def test_generate_answer_handles_none_content_safely(monkeypatch):
@@ -187,7 +219,7 @@ async def test_generate_answer_handles_none_content_safely(monkeypatch):
     _patch_client(monkeypatch, fake_client)
 
     with pytest.raises(llm_service.LLMProviderError):
-        await llm_service.generate_answer("system", "question")
+        await llm_service.generate_answer("system", _one_message("question"))
 
 
 # --- 6. Tests work without OPENAI_API_KEY ---
@@ -201,6 +233,28 @@ async def test_generate_answer_works_without_real_api_key(monkeypatch):
     fake_client = _FakeClient(content="ok")
     _patch_client(monkeypatch, fake_client)
 
-    result = await llm_service.generate_answer("system", "question")
+    result = await llm_service.generate_answer("system", _one_message("question"))
 
     assert result == "ok"
+
+
+# --- 7. A raw string for `messages` is rejected, not silently corrupted ---
+
+
+async def test_generate_answer_rejects_raw_string_messages(monkeypatch):
+    """
+    A bare string is technically iterable, so without an explicit
+    guard, `*messages` inside generate_answer() would silently unpack
+    it character-by-character into garbage "messages" instead of
+    raising a clear error — a real footgun for any caller still using
+    the old (system_prompt, user_prompt: str) calling convention. This
+    must fail loudly and immediately, before any client is even
+    constructed.
+    """
+    fake_client = _FakeClient(content="should never be reached")
+    _patch_client(monkeypatch, fake_client)
+
+    with pytest.raises(TypeError):
+        await llm_service.generate_answer("system", "this is a raw string, not a list")
+
+    assert fake_client.chat.completions.calls == []

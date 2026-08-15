@@ -462,3 +462,252 @@ async def test_answer_question_top_k_passthrough_to_retrieval(
 
     sent_prompt = llm_client.chat.completions.calls[0]["messages"][1]["content"]
     assert sent_prompt.count("[Context Chunk") == 2
+
+
+# --- Chat Persistence milestone: answer_question_with_history() ---
+
+
+async def test_answer_question_unchanged_still_works_after_history_addition(
+    db_session: AsyncSession, monkeypatch
+):
+    """
+    Confirms answer_question() (the existing stateless single-question
+    path) behaves identically after llm_service.generate_answer()'s
+    signature change and the addition of answer_question_with_history()
+    — not a new test of new functionality, but a direct regression
+    check on the unchanged function.
+    """
+    document = await _make_document(db_session, "unchanged")
+    document_text = await _make_document_text(db_session, document.id)
+    await _add_chunk(
+        db_session,
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="some content",
+        embedding=_unit_vector(0),
+    )
+    await db_session.commit()
+
+    _mock_embedding_client(monkeypatch, vector=_unit_vector(0))
+    llm_client = _mock_llm_client(monkeypatch, answer="unchanged answer")
+
+    result = await rag_service.answer_question(db_session, document=document, question="question")
+
+    assert result == "unchanged answer"
+    messages = llm_client.chat.completions.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    assert len(messages) == 2  # no history — exactly system + current question
+
+
+async def test_answer_question_with_history_accepts_and_forwards_history(
+    db_session: AsyncSession, monkeypatch
+):
+    document = await _make_document(db_session, "history")
+    document_text = await _make_document_text(db_session, document.id)
+    await _add_chunk(
+        db_session,
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="some content",
+        embedding=_unit_vector(0),
+    )
+    await db_session.commit()
+
+    _mock_embedding_client(monkeypatch, vector=_unit_vector(0))
+    llm_client = _mock_llm_client(monkeypatch, answer="answer with history")
+
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+    ]
+
+    result = await rag_service.answer_question_with_history(
+        db_session, document=document, question="follow-up question", history=history
+    )
+
+    assert result == "answer with history"
+    messages = llm_client.chat.completions.calls[0]["messages"]
+    # system + 2 history turns + current question = 4 messages
+    assert len(messages) == 4
+    assert messages[0]["role"] == "system"
+    assert messages[1] == {"role": "user", "content": "first question"}
+    assert messages[2] == {"role": "assistant", "content": "first answer"}
+    assert messages[3]["role"] == "user"
+
+
+async def test_answer_question_with_history_preserves_role_order(
+    db_session: AsyncSession, monkeypatch
+):
+    document = await _make_document(db_session, "roleorder")
+    document_text = await _make_document_text(db_session, document.id)
+    await _add_chunk(
+        db_session,
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="some content",
+        embedding=_unit_vector(0),
+    )
+    await db_session.commit()
+
+    _mock_embedding_client(monkeypatch, vector=_unit_vector(0))
+    llm_client = _mock_llm_client(monkeypatch, answer="answer")
+
+    history = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+
+    await rag_service.answer_question_with_history(
+        db_session, document=document, question="q3", history=history
+    )
+
+    messages = llm_client.chat.completions.calls[0]["messages"]
+    roles = [m["role"] for m in messages]
+    # system, user, assistant, user, assistant, user(current)
+    assert roles == ["system", "user", "assistant", "user", "assistant", "user"]
+
+
+async def test_answer_question_with_history_only_sends_most_recent_n_messages(
+    db_session: AsyncSession, monkeypatch
+):
+    document = await _make_document(db_session, "truncate")
+    document_text = await _make_document_text(db_session, document.id)
+    await _add_chunk(
+        db_session,
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="some content",
+        embedding=_unit_vector(0),
+    )
+    await db_session.commit()
+
+    _mock_embedding_client(monkeypatch, vector=_unit_vector(0))
+    llm_client = _mock_llm_client(monkeypatch, answer="answer")
+
+    # 20 history entries, well over MAX_HISTORY_MESSAGES (10) — the
+    # oldest entries must be dropped, keeping only the most recent
+    # MAX_HISTORY_MESSAGES.
+    history = [{"role": "user", "content": f"turn {i}"} for i in range(20)]
+
+    await rag_service.answer_question_with_history(
+        db_session, document=document, question="current question", history=history
+    )
+
+    messages = llm_client.chat.completions.calls[0]["messages"]
+    # system + MAX_HISTORY_MESSAGES history turns + current question
+    assert len(messages) == 1 + rag_service.MAX_HISTORY_MESSAGES + 1
+    history_contents = [m["content"] for m in messages[1:-1]]
+    # The 10 most recent of the 20 original turns — "turn 10".."turn 19"
+    assert history_contents == [f"turn {i}" for i in range(10, 20)]
+
+
+async def test_answer_question_with_history_current_question_appears_exactly_once(
+    db_session: AsyncSession, monkeypatch
+):
+    document = await _make_document(db_session, "onceonly")
+    document_text = await _make_document_text(db_session, document.id)
+    await _add_chunk(
+        db_session,
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="some content",
+        embedding=_unit_vector(0),
+    )
+    await db_session.commit()
+
+    _mock_embedding_client(monkeypatch, vector=_unit_vector(0))
+    llm_client = _mock_llm_client(monkeypatch, answer="answer")
+
+    history = [
+        {"role": "user", "content": "prior question"},
+        {"role": "assistant", "content": "prior answer"},
+    ]
+
+    await rag_service.answer_question_with_history(
+        db_session, document=document, question="the current question", history=history
+    )
+
+    messages = llm_client.chat.completions.calls[0]["messages"]
+    occurrences = sum(1 for m in messages if "the current question" in m["content"])
+    assert occurrences == 1
+    # The current question is not present anywhere in the historical
+    # slice itself — only in the final message.
+    assert "the current question" not in [m["content"] for m in messages[:-1]]
+
+
+async def test_answer_question_with_history_empty_retrieval_returns_fallback(
+    db_session: AsyncSession, monkeypatch
+):
+    document = await _make_document(db_session, "emptyhist")
+    await _make_document_text(db_session, document.id)  # no chunks added
+    await db_session.commit()
+
+    _mock_embedding_client(monkeypatch, vector=_unit_vector(0))
+    llm_client = _mock_llm_client(monkeypatch, answer="should never be returned")
+
+    history = [{"role": "user", "content": "prior question"}]
+
+    result = await rag_service.answer_question_with_history(
+        db_session, document=document, question="question", history=history
+    )
+
+    assert result == rag_service.NO_CONTEXT_ANSWER
+    assert len(llm_client.chat.completions.calls) == 0
+
+
+async def test_answer_question_with_history_propagates_llm_provider_error(
+    db_session: AsyncSession, monkeypatch
+):
+    document = await _make_document(db_session, "histllmfail")
+    document_text = await _make_document_text(db_session, document.id)
+    await _add_chunk(
+        db_session,
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="some content",
+        embedding=_unit_vector(0),
+    )
+    await db_session.commit()
+
+    _mock_embedding_client(monkeypatch, vector=_unit_vector(0))
+
+    import openai
+
+    api_error = openai.APIError("provider failure", request=SimpleNamespace(), body=None)
+    _mock_llm_client(monkeypatch, error=api_error)
+
+    history = [{"role": "user", "content": "prior question"}]
+
+    with pytest.raises(llm_service.LLMProviderError):
+        await rag_service.answer_question_with_history(
+            db_session, document=document, question="question", history=history
+        )
+
+
+async def test_answer_question_with_history_empty_history_behaves_like_no_history(
+    db_session: AsyncSession, monkeypatch
+):
+    document = await _make_document(db_session, "emptylist")
+    document_text = await _make_document_text(db_session, document.id)
+    await _add_chunk(
+        db_session,
+        document_text_id=document_text.id,
+        chunk_index=0,
+        content="some content",
+        embedding=_unit_vector(0),
+    )
+    await db_session.commit()
+
+    _mock_embedding_client(monkeypatch, vector=_unit_vector(0))
+    llm_client = _mock_llm_client(monkeypatch, answer="answer")
+
+    result = await rag_service.answer_question_with_history(
+        db_session, document=document, question="question", history=[]
+    )
+
+    assert result == "answer"
+    messages = llm_client.chat.completions.calls[0]["messages"]
+    assert len(messages) == 2  # system + current question only
