@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
-import { ROUTES } from "../constants/routes";
+import { ROUTES, chatPath } from "../constants/routes";
 import { ApiError } from "../services/api";
 import * as documentService from "../services/document";
 import type { DocumentResponse } from "../types/document";
@@ -266,6 +266,11 @@ export default function DocumentsPage() {
                   {formatDate(document.created_at)}
                 </td>
                 <td style={{ padding: "0.5rem 0", borderBottom: "1px solid var(--border)" }}>
+                  <button
+                    onClick={() => navigate(chatPath(document.id))}
+                  >
+                    Open Chat
+                  </button>{" "}
                   <button
                     onClick={() => handleProcess(document.id)}
                     disabled={processingId === document.id}

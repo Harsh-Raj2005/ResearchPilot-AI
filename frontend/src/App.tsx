@@ -5,6 +5,7 @@ import { ROUTES } from "./constants/routes";
 import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
 import DocumentsPage from "./pages/DocumentsPage";
+import ChatPage from "./pages/ChatPage";
 import ProtectedRoute from "./components/ProtectedRoute";
 
 /**
@@ -59,6 +60,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <DocumentsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path={ROUTES.chat}
+            element={
+              <ProtectedRoute>
+                <ChatPage />
               </ProtectedRoute>
             }
           />

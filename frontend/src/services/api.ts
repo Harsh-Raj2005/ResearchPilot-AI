@@ -98,6 +98,23 @@ export async function postAuth<T>(path: string, token: string): Promise<T> {
 }
 
 /**
+ * Authenticated POST with a JSON request body — e.g. creating a chat
+ * session's messages. Mirrors post()'s JSON handling plus
+ * postAuth()'s bearer-token header.
+ */
+export async function postAuthBody<T>(path: string, token: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { ...authHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await extractErrorMessage(response));
+  }
+  return response.json() as Promise<T>;
+}
+
+/**
  * Authenticated multipart upload — POST /documents/upload.
  * Deliberately does not set Content-Type: the browser sets the
  * multipart boundary itself when the body is a FormData instance;

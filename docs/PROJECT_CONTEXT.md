@@ -565,32 +565,34 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - **RAG Foundation — internal `rag_service.answer_question()` primitive; composes `embed_query()` + `retrieve_similar_chunks()` + a new `llm_service.generate_answer()` into a single-document Q&A pipeline. Complete.**
 - **Single-Document Chat API — thin authenticated `POST /api/v1/documents/{document_id}/chat` endpoint exposing `rag_service.answer_question()` over HTTP; new `ChatRequest`/`ChatResponse` schemas. Complete.**
 - **Chat Persistence — `ChatSession`/`ChatMessage` models; four new endpoints for creating sessions, listing sessions, sending messages, and retrieving history; history-aware RAG via `rag_service.answer_question_with_history()`; native multi-turn `llm_service.generate_answer()`; atomic user+assistant message persistence. Complete.**
+- **Frontend Chat UI — `ChatPage.tsx`, protected route `/documents/:documentId/chat`; consumes the four Chat Persistence endpoints (create/list sessions, send/list messages) via a new `services/chat.ts`; session sidebar + conversation view + composer; "Open Chat" link added to `DocumentsPage.tsx`. No backend changes. Complete.**
 
-**Git state:** everything through this milestone was implemented on top of the real, committed `0bf7de2` (`feat: add RAG foundation`, branch `main`), on top of the still-uncommitted Single-Document Chat API changes already in this working tree. This milestone's changes remain uncommitted, per its own instructions. `alembic current`/`heads`/`check` were re-verified (head moved to `f54da3d255ec`, the new migration); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact change surface.
+**Git state:** everything through this milestone was implemented on top of the real, committed `0bf7de2` (`feat: add RAG foundation`, branch `main`), on top of the still-uncommitted Chat Persistence changes already in this working tree. This milestone's changes remain uncommitted, per its own instructions. `git diff --stat`/`--name-only`/`--check` (scoped to `frontend/`) were run for real, confirming the exact change surface; the backend was not modified.
 
 **Not started at all:**
 - Automatic parsing on upload — deliberately not built; a confirmed design decision, not an oversight.
 - DOCX/TXT extraction.
-- Frontend chat UI — the persisted-conversation backend now exists, but no UI consumes it yet.
 - Vector index (HNSW/IVFFlat) — deferred until multi-document/large-scale retrieval genuinely needs one.
 - Background worker, Redis, Arq.
 - Any status/processing-state column, parser/chunk/embedding versioning.
 - Multi-document/global semantic search (Phase 2).
 - Document detail page, PDF viewer/annotation, any research-workspace UI.
-- Session titles, message editing/deletion, conversation summarization, streaming responses — all deliberately deferred (see Section 11's decisions on this milestone).
+- Session titles, message editing/deletion, conversation summarization, streaming responses — all deliberately deferred.
 - Citations/sources schema — deliberately deferred, separate future milestone.
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None. Chat Persistence is complete and fully verified for its approved scope — persisted multi-turn conversations per document, atomic message writes, bounded history sent to the LLM, no frontend surface.
+**A real, pre-existing backend gap was found (not fixed) during this milestone's manual E2E verification:** the persisted send-message route (`POST /documents/{document_id}/chat/sessions/{session_id}/messages`) catches `LLMProviderError` but not `EmbeddingProviderError` — a query-embedding failure (e.g., no `OPENAI_API_KEY` configured) surfaces as a raw `500` instead of the documented `502`. Confirmed via a real curl request against a running local server (traceback: `embedding_service._get_client()` → `openai.OpenAIError: Missing credentials` → uncaught by the router's `except llm_service.LLMProviderError` clause). Not fixed here, per this milestone's explicit "frontend-only, do not modify backend without asking" scope boundary — flagged for a future, separate, approved fix. The frontend degrades gracefully regardless (falls back to a generic "Request failed: 500" message via the existing `ApiError`/`extractErrorMessage` path — no crash, no leaked internals).
+
+**Partially completed work:** None. Frontend Chat UI is complete and fully verified for its approved scope.
 
 ---
 
 ## 13. NEXT TASK
 
-**Chat Persistence is now complete.** A user can create a named conversation, send messages, and have prior turns genuinely inform the LLM's answer — but nothing in the frontend calls any of this yet. The natural next milestone is a frontend chat UI consuming the four new endpoints (session list/create, send message, history), though DOCX/TXT text extraction and a first deployment pass remain open, undesigned alternatives. This section intentionally does not commit to one over the others, since no design-review conversation has happened yet for whichever comes next.
+**Frontend Chat UI is now complete.** A user can log in, upload and process a document, open its chat workspace, create conversations, send messages, and see persisted history across page refreshes and logins. The natural next milestones, none yet designed or approved, include: fixing the `EmbeddingProviderError` → `502` gap found above, a first deployment pass, or DOCX/TXT text extraction. This section intentionally does not commit to one over the others, since no design-review conversation has happened yet for whichever comes next.
 
-**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, Single-Document Chat API, and Chat Persistence (do not re-litigate without a new reason):**
+**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, Single-Document Chat API, Chat Persistence, and Frontend Chat UI (do not re-litigate without a new reason):**
 - Separate `document_texts` table, not a `Document` column; separate `document_chunks` table, FK'd to `document_texts`, not `documents`.
 - 1:0..1 (`DocumentText`) / 1:many (`DocumentChunk`) via constraints, no versioning on either.
 - No status column, no `relationship()` anywhere — including on `ChatSession`/`ChatMessage`.
@@ -637,7 +639,7 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
   - **RAG Foundation ✅ done** — internal `rag_service.answer_question()` primitive composing embedding + retrieval + a new `llm_service.generate_answer()`; no new endpoint, no chat persistence, no frontend change.
   - **Single-Document Chat API ✅ done** — `POST /api/v1/documents/{document_id}/chat`, thin and stateless, exposing `rag_service.answer_question()` over HTTP; no chat persistence, no frontend change.
   - **Chat Persistence ✅ done** — `ChatSession`/`ChatMessage` models, four new session/message endpoints, history-aware RAG, atomic message writes; no frontend change.
-  - Frontend chat UI — not started.
+  - **Frontend Chat UI ✅ done** — protected `/documents/:documentId/chat` route; session sidebar, conversation view, composer; consumes the four Chat Persistence endpoints; no backend changes.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.
 - **Phase 3:** Notes, highlights, tags; GROBID metadata extraction.

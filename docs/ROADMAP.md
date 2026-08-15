@@ -87,9 +87,17 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Atomic send-message persistence: user message and assistant reply staged together, one commit only after the LLM call succeeds — no partial state on failure
   - [x] No new frontend, no vector index change, no summarization
   - [x] All RAG/LLM calls mocked in tests — no real OpenAI API call, no OPENAI_API_KEY required
+- [x] Frontend Chat UI
+  - [x] Protected route `/documents/:documentId/chat`, "Open Chat" link from the documents list
+  - [x] `services/chat.ts`, `types/chat.ts` — createChatSession, listChatSessions, getChatMessages, sendChatMessage
+  - [x] Session sidebar (list, new-chat, select), conversation view (user/assistant distinction, empty states), composer (Enter-to-send, Shift+Enter newline, disabled while sending)
+  - [x] Server is the source of truth — no client-side conversation store; refresh/logout/login all reload from the API
+  - [x] 401/404/422/502 handled via the existing ApiError mechanism; no backend changes
+  - [x] Frontend build + lint pass; full backend suite re-run, zero regressions
 
 NEXT (not yet approved/designed):
-- Frontend chat UI
+- Fix: `EmbeddingProviderError` not mapped to 502 on the persisted send-message route (found during Frontend Chat UI's manual E2E, not fixed — out of that milestone's scope)
 - Conversation summarization for long sessions
 - Vector index (HNSW/IVFFlat) — once multi-document/large-scale retrieval genuinely needs one
 - Multi-document search (Phase 2)
+- Deployment

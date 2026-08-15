@@ -8,4 +8,10 @@ export const ROUTES = {
   login: "/login",
   signup: "/signup",
   documents: "/documents",
+  chat: "/documents/:documentId/chat",
 } as const;
+
+/** Builds a concrete chat URL for a specific document — pairs with ROUTES.chat's pattern. */
+export function chatPath(documentId: string): string {
+  return `/documents/${documentId}/chat`;
+}

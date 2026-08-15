@@ -19,6 +19,11 @@ export function listDocuments(
   );
 }
 
+/** Metadata for a single document — used by the chat page header. */
+export function getDocument(token: string, documentId: string): Promise<DocumentResponse> {
+  return getAuth<DocumentResponse>(`${DOCUMENTS_PATH}/${documentId}`, token);
+}
+
 export function uploadDocument(token: string, file: File): Promise<DocumentResponse> {
   return uploadAuth<DocumentResponse>(`${DOCUMENTS_PATH}/upload`, token, file);
 }

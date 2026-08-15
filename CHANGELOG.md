@@ -1354,3 +1354,87 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   editing/deletion, no conversation summarization, no streaming, no
   Redis/background workers, no multi-document sessions, no citations
   schema — all confirmed still out of scope and unimplemented.
+
+### Frontend Chat UI
+- Added `frontend/src/pages/ChatPage.tsx` — a protected chat
+  workspace at `/documents/:documentId/chat`, consuming the four
+  Chat Persistence endpoints. Single file, matching
+  `DocumentsPage.tsx`'s existing one-file-per-feature precedent — no
+  premature component extraction. Session sidebar (list, "+ New
+  Chat", select-to-switch), a conversation view distinguishing user
+  vs. assistant turns, and a composer (Enter to send, Shift+Enter for
+  a newline, disabled while a request is in flight).
+- Added `frontend/src/services/chat.ts`
+  (`createChatSession`/`listChatSessions`/`getChatMessages`/`sendChatMessage`)
+  and `frontend/src/types/chat.ts` (`ChatSessionResponse`,
+  `ChatMessageResponse`) — mirroring `services/document.ts`'s and
+  `types/document.ts`'s existing conventions exactly.
+- Added `postAuthBody()` to `frontend/src/services/api.ts` — the one
+  genuinely missing piece found by inspection: the existing
+  `postAuth()` had no request-body parameter, but session creation
+  needs an authenticated POST with no body while sending a message
+  needs one with a JSON body. Mirrors `post()`'s existing JSON
+  handling plus `postAuth()`'s bearer-token header; no new HTTP
+  client was introduced.
+- Added `getDocument()` to `frontend/src/services/document.ts` —
+  reuses the existing `GET /documents/{document_id}` endpoint to show
+  the document's filename in the chat page header; no new backend
+  endpoint was created merely to display a title.
+- Added an "Open Chat" button to `frontend/src/pages/DocumentsPage.tsx`
+  and a new protected route (`ROUTES.chat` / `chatPath()`) in
+  `frontend/src/App.tsx` and `frontend/src/constants/routes.ts` — the
+  only way to reach the chat workspace from the existing document
+  list, using the existing `ProtectedRoute` mechanism unchanged.
+- **Server is the sole source of truth — no client-side conversation
+  store.** Sending a message optimistically shows the user's turn as
+  a pending UI placeholder, then re-fetches the real, persisted
+  transcript from the API once the request settles (or removes the
+  placeholder on failure) — the placeholder is never trusted as the
+  final record. A refresh, logout/login, or switching sessions always
+  reloads from the server.
+- `401` reuses the exact `ApiError`/logout-and-redirect pattern
+  already established in `DocumentsPage.tsx`. `404`, `422`, and `502`
+  are shown as plain, non-technical messages; no stack traces, API
+  keys, or raw provider/database errors are ever rendered.
+- **No backend files were modified.** No new dependency was added —
+  no Markdown renderer, no state-management library, no HTTP client,
+  no animation library; `package.json` confirmed unchanged before
+  starting (no React Query, no CSS framework already present to
+  justify adding one).
+- **A real, pre-existing backend gap was found during manual E2E
+  verification, and deliberately not fixed here.** The persisted
+  send-message route
+  (`POST /documents/{document_id}/chat/sessions/{session_id}/messages`)
+  catches `LLMProviderError` but not `EmbeddingProviderError` — a
+  query-embedding failure (e.g. no `OPENAI_API_KEY` configured)
+  surfaces as a raw `500` instead of the documented `502`. Confirmed
+  via a real request against a running local server; traceback shows
+  `embedding_service._get_client()` raising `openai.OpenAIError`,
+  uncaught by the router's `except llm_service.LLMProviderError`
+  clause. Not fixed in this milestone, per its explicit
+  frontend-only scope boundary — the frontend still degrades
+  gracefully (a generic "Request failed: 500" message, no crash, no
+  leaked internals) via the existing `ApiError`/`extractErrorMessage`
+  path regardless.
+- **Verification:** `npm run build` (`tsc -b && vite build`) passes
+  cleanly. `npm run lint` (oxlint) — 0 warnings, 0 errors across all
+  21 frontend source files. Full backend suite re-run: **288
+  passed**, zero regressions, confirming no backend behavior was
+  affected. Manual end-to-end verification performed via `curl`
+  against a real running FastAPI server (not simulated): signup →
+  login → document upload → `GET /documents/{id}` → session creation
+  → session listing → message-history retrieval → `422` (blank
+  question) → `401` (no token) all confirmed matching the frontend's
+  exact expectations. A full real-provider round trip (send a
+  question, receive an LLM-backed answer) could not be executed in
+  this sandbox — no `OPENAI_API_KEY` is configured here, and
+  `/process` itself requires the embedding provider — so document
+  processing, and therefore a populated, chat-ready document, could
+  not be produced. This is an environment limitation, not a
+  frontend defect; no successful provider call was fabricated or
+  claimed.
+- No streaming, no WebSockets/SSE, no message editing/deletion, no
+  session titles/renaming, no conversation summarization, no
+  citations/source cards, no PDF viewer, no multi-document chat, no
+  new authentication mechanism, no deployment — all confirmed still
+  out of scope and unimplemented.

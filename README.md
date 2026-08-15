@@ -84,8 +84,18 @@ history (up to the last 10 messages) into the LLM via a native
 multi-turn message list, so follow-up questions are actually
 answered with conversational context. The original stateless
 `POST /documents/{document_id}/chat` endpoint is unchanged and
-still available. A frontend chat UI remains a separate,
-not-yet-implemented future milestone. See
+still available.
+
+**A frontend chat UI now consumes all of this.** A protected
+`/documents/:documentId/chat` route lets a signed-in user open a
+document's conversation workspace: a session sidebar (create new,
+switch between existing), a message view distinguishing user and
+assistant turns, and a composer (Enter to send, Shift+Enter for a
+newline). The server remains the sole source of truth — there is no
+client-side conversation store, so a page refresh, logout/login, or
+switching sessions always reloads the real persisted transcript from
+the API. `401` reuses the existing logout-and-redirect handling;
+`404`/`422`/`502` are shown as plain, non-technical messages. See
 `docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
 for the task-by-task history.
 
