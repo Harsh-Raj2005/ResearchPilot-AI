@@ -64,9 +64,16 @@ grounded prompt (retrieved text is treated as untrusted reference
 material, not instructions), and calls a new `llm_service.py`
 (OpenAI Chat Completions) to generate an answer. If no relevant
 chunks are found, it returns a deterministic fallback without calling
-the LLM at all. This is a pure internal service — no HTTP endpoint,
-no chat persistence, no frontend UI yet; it's the foundation
-single-document chat will eventually call. See
+the LLM at all.
+
+**`POST /api/v1/documents/{document_id}/chat` now exposes that
+pipeline over HTTP.** Authenticated, ownership-checked via the
+existing pattern, stateless (no conversation history, no session) —
+one question in, `{"answer": "..."}` out. The router treats
+`rag_service` as a black box: no embedding, retrieval, prompt
+construction, or LLM logic lives in the endpoint itself. A frontend
+chat UI and persisted conversation history remain separate,
+not-yet-implemented future milestones. See
 `docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
 for the task-by-task history.
 

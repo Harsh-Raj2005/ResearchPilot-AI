@@ -32,7 +32,7 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), Document Chunking, Document Chunks → Embeddings, and Vector Retrieval are all fully complete. **This milestone (RAG Foundation) connects those primitives to an LLM** — a new internal-only `rag_service.answer_question()` composes `embedding_service.embed_query()`, `retrieval_service.retrieve_similar_chunks()`, and a new `llm_service.generate_answer()` (OpenAI Chat Completions) into a single-document question-answering pipeline. No new endpoint, no new migration, no chat persistence, no frontend change — this is a pure internal service, the foundation single-document chat will eventually call. Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), Document Chunking, Document Chunks → Embeddings, Vector Retrieval, and RAG Foundation are all fully complete. **This milestone (Single-Document Chat API) exposes the RAG pipeline over HTTP for the first time** — a new authenticated `POST /api/v1/documents/{document_id}/chat` endpoint, thin by design, calls the existing internal `rag_service.answer_question()` unchanged. New request/response schemas (`ChatRequest`/`ChatResponse`); no new migration, no chat persistence, no frontend change. The RAG service, retrieval, embedding, and LLM layers are all consumed as black boxes — none were modified. Nothing has been deployed yet.
 
 ---
 
@@ -439,7 +439,7 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 ## 9. API ENDPOINTS
 
-**No route added or removed this milestone** — `/process`'s existing contract is extended in behavior (it now also generates and persists embeddings) but not in shape, aside from one new possible error status. `document_texts` and `document_chunks` content/embeddings are all still not exposed via HTTP in any form — the endpoint returns `DocumentResponse`, never `DocumentText`, chunk data, or embedding vectors.
+**One new route this milestone** — `POST /api/v1/documents/{document_id}/chat`, the first HTTP-facing surface for the RAG pipeline. All prior routes are unchanged in shape and behavior.
 
 | Method | Route | Purpose | Auth required? |
 |---|---|---|---|
@@ -452,8 +452,9 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 | GET | `/api/v1/documents/{document_id}/file` | Download the actual stored file | **Yes** |
 | DELETE | `/api/v1/documents/{document_id}` | Delete a document (file + DB row) | **Yes** |
 | POST | `/api/v1/documents/{document_id}/process` | Parse the document, persist extracted text, chunks, and their embeddings (atomically); reprocesses (replacing all three) if already processed | **Yes** |
+| POST | `/api/v1/documents/{document_id}/chat` | Ask one question about one owned document; returns `{"answer": "..."}`. Stateless — no conversation history. | **Yes** |
 
-`docs/API.md` updated this milestone — the `/process` section now documents synchronous embedding generation, the atomic text+chunk+embedding persistence, and the new `502` response for an embedding-provider failure.
+`docs/API.md` updated this milestone — new "Chat (RAG)" section documenting the endpoint's request/response shape and full error mapping (`401`/`404`/`422`/`502`).
 
 ---
 
@@ -540,32 +541,33 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - **Document Chunks → Embeddings — OpenAI `text-embedding-3-small` embeddings generated and persisted atomically alongside text and chunks, via the same orchestration service extended. Complete.**
 - **Vector Retrieval — internal `retrieval_service.retrieve_similar_chunks()` primitive; pgvector cosine-distance search scoped to a single, authorized document; `embedding_service.embed_query()` added for single-text embedding. Complete.**
 - **RAG Foundation — internal `rag_service.answer_question()` primitive; composes `embed_query()` + `retrieve_similar_chunks()` + a new `llm_service.generate_answer()` into a single-document Q&A pipeline. Complete.**
+- **Single-Document Chat API — thin authenticated `POST /api/v1/documents/{document_id}/chat` endpoint exposing `rag_service.answer_question()` over HTTP; new `ChatRequest`/`ChatResponse` schemas. Complete.**
 
-**Git state:** everything through this milestone was implemented on top of the real, committed `b346022` (`feat: add document chunk embeddings`, branch `embeddings-work`), on top of the still-uncommitted Vector Retrieval changes already in this working tree. This milestone's changes remain uncommitted, per its own instructions. `alembic current`/`heads`/`check` were re-verified (unchanged — no schema change this milestone); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact change surface.
+**Git state:** everything through this milestone was implemented on top of the real, committed `0bf7de2` (`feat: add RAG foundation`, branch `main`). This milestone's changes remain uncommitted, per its own instructions. `alembic current`/`heads`/`check` were re-verified (unchanged — no schema change this milestone); `git status`/`git diff --stat`/`--name-only` were run for real, confirming the exact change surface.
 
 **Not started at all:**
 - Automatic parsing on upload — deliberately not built; a confirmed design decision, not an oversight.
 - DOCX/TXT extraction.
-- Single-document chat (a persisted conversation, exposed via HTTP) — RAG Foundation is the internal pipeline chat will eventually call, not chat itself.
-- Any RAG/chat HTTP endpoint — `rag_service` is internal-only, with no current caller beyond its own tests.
-- Chat persistence (`ChatSession`/`ChatMessage` models, conversation memory).
+- Chat persistence (`ChatSession`/`ChatMessage` models, conversation memory) — this milestone is stateless, single-question only.
+- Frontend chat UI.
 - Vector index (HNSW/IVFFlat) — deferred until multi-document/large-scale retrieval genuinely needs one.
 - Background worker, Redis, Arq.
 - Any status/processing-state column, parser/chunk/embedding versioning.
 - Multi-document/global semantic search (Phase 2).
-- Document detail page, PDF viewer/annotation, any research-workspace UI, frontend chat UI.
+- Document detail page, PDF viewer/annotation, any research-workspace UI.
+- Citations/sources schema — deliberately deferred, separate future milestone.
 - Any actual deployment.
 - Sentry integration.
 
-**Partially completed work:** None. RAG Foundation is complete and fully verified for its approved, deliberately narrow scope — a pure internal single-document Q&A service, no HTTP endpoint, no persistence, no frontend surface.
+**Partially completed work:** None. Single-Document Chat API is complete and fully verified for its approved, deliberately narrow scope — one stateless authenticated endpoint over the existing RAG pipeline, unchanged. No RAG/retrieval/embedding/LLM service was modified.
 
 ---
 
 ## 13. NEXT TASK
 
-**RAG Foundation is now complete.** `rag_service.answer_question()` exists, is tested, and can produce a grounded answer to a question about one document's own chunks — but nothing calls it outside its own tests yet. The natural next milestones, none yet designed or approved, include: a thin authenticated HTTP endpoint exposing this pipeline (Stage B, explicitly deferred from this milestone), chat persistence (`ChatSession`/`ChatMessage` models) to remember a conversation across requests, a frontend chat UI, DOCX/TXT text extraction, or a first deployment pass. This section intentionally does not commit to one over the others, since no design-review conversation has happened yet for whichever comes next.
+**Single-Document Chat API is now complete.** A user can authenticate, own a processed document, and ask it one question over HTTP — but there is still no way to remember a conversation, and no frontend UI calls this endpoint yet. The natural next milestones, none yet designed or approved, include: chat persistence (`ChatSession`/`ChatMessage` models) to remember a conversation across requests, a frontend chat UI consuming this endpoint, DOCX/TXT text extraction, or a first deployment pass. This section intentionally does not commit to one over the others, since no design-review conversation has happened yet for whichever comes next.
 
-**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, Document Chunks → Embeddings, Vector Retrieval, and RAG Foundation (do not re-litigate without a new reason):**
+**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, and Single-Document Chat API (do not re-litigate without a new reason):**
 - Separate `document_texts` table, not a `Document` column; separate `document_chunks` table, FK'd to `document_texts`, not `documents`.
 - 1:0..1 (`DocumentText`) / 1:many (`DocumentChunk`) via constraints, no versioning on either.
 - No status column, no `relationship()` anywhere.
@@ -578,9 +580,12 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - `DocumentChunk.embedding` is `NOT NULL` — embeddings are always generated before chunk rows are constructed.
 - Processing (parsing, chunking, embedding) is triggered by the existing explicit `/process` endpoint, not automatically on upload, and not via separate endpoints for each stage.
 - The process endpoint returns `DocumentResponse`, never `DocumentText`, extracted text, chunk data, or embedding vectors.
-- **`rag_service.answer_question()` accepts an already-authorized `Document`, performs zero ownership checks of its own** — the exact same pattern already established by `document_text_service` and `retrieval_service`.
-- **Empty retrieval returns a deterministic fallback answer (`rag_service.NO_CONTEXT_ANSWER`) without ever calling the LLM** — chosen over sending empty context and hoping the model says "I don't know."
-- **`retrieval_service.DEFAULT_TOP_K`/`MAX_TOP_K` remain the single source of truth for top-k policy** — `rag_service` passes `top_k` through unchanged, no second clamping policy.
+- `rag_service.answer_question()` accepts an already-authorized `Document`, performs zero ownership checks of its own — the exact same pattern already established by `document_text_service` and `retrieval_service`.
+- Empty retrieval returns a deterministic fallback answer (`rag_service.NO_CONTEXT_ANSWER`) without ever calling the LLM — chosen over sending empty context and hoping the model says "I don't know."
+- `retrieval_service.DEFAULT_TOP_K`/`MAX_TOP_K` remain the single source of truth for top-k policy — `rag_service` passes `top_k` through unchanged, no second clamping policy.
+- **`POST /documents/{document_id}/chat` treats `rag_service` as a black box** — the router performs authentication, ownership resolution, and error mapping only; no embedding, retrieval, prompt construction, or LLM logic was moved into the router.
+- **`LLMProviderError` → `502`** at the chat endpoint, mirroring the existing `EmbeddingProviderError` → `502` precedent on `/process` — same generic-message, no-provider-leak treatment.
+- **The chat endpoint is stateless** — no conversation ID, no history, no session; each request is independent.
 - No document detail page — list rows already show everything `DocumentResponse` provides.
 - No persisted "processed" status anywhere, frontend or backend — the backend doesn't track one.
 - A `401` from any authenticated frontend call triggers logout + redirect to `/login`.
@@ -593,7 +598,7 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 - **Phase 1 (current, in progress — target end state):** single-document upload + chat, deployed.
   - Auth ✅ done.
-  - Protected-route dependency (`get_current_user`) ✅ done, consumed by 6 routes.
+  - Protected-route dependency (`get_current_user`) ✅ done, consumed by 7 routes.
   - **Task 3B (Document Management backend, upload-only scope) ✅ done.**
   - **Document Management CRUD ✅ done** (list, detail, download, delete).
   - **Document Text Extraction Checkpoints 1–5 ✅ done** — parser, schema, parse-to-persist integration, explicit processing endpoint (`POST /documents/{document_id}/process`); upload remains unmodified.
@@ -602,7 +607,8 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
   - **Document Chunks → Embeddings ✅ done** — OpenAI `text-embedding-3-small` embeddings generated and persisted atomically alongside text and chunks; no vector index yet, no frontend change.
   - **Vector Retrieval ✅ done** — internal `retrieval_service.retrieve_similar_chunks()` primitive; pgvector cosine-distance search; no new endpoint, no frontend change.
   - **RAG Foundation ✅ done** — internal `rag_service.answer_question()` primitive composing embedding + retrieval + a new `llm_service.generate_answer()`; no new endpoint, no chat persistence, no frontend change.
-  - Single-document chat (HTTP endpoint + persistence) — not started.
+  - **Single-Document Chat API ✅ done** — `POST /api/v1/documents/{document_id}/chat`, thin and stateless, exposing `rag_service.answer_question()` over HTTP; no chat persistence, no frontend change.
+  - Chat persistence (`ChatSession`/`ChatMessage`) — not started.
   - Frontend chat UI — not started.
   - Deployment (Railway + Vercel) — not started.
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.

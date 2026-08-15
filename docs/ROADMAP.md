@@ -69,9 +69,16 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Empty retrieval returns a deterministic fallback answer without calling the LLM
   - [x] No new endpoint (Stage A only — a public endpoint is a separate future decision), no new migration, no chat persistence, no frontend change
   - [x] All provider calls mocked in tests — no real OpenAI API call, no OPENAI_API_KEY required
+- [x] Single-Document Chat API (Stage B)
+  - [x] `POST /api/v1/documents/{document_id}/chat` — thin authenticated endpoint exposing the existing internal `rag_service.answer_question()` pipeline
+  - [x] `backend/app/schemas/chat.py` — `ChatRequest`/`ChatResponse`; empty/whitespace-only question rejected at the schema boundary (`422`)
+  - [x] Ownership via the existing `document_service.get_document_for_user()` — nonexistent and unauthorized documents both `404`, indistinguishable
+  - [x] `rag_service.answer_question()` treated as a black box — no RAG logic, retrieval, or LLM calls in the router
+  - [x] `LLMProviderError` → `502`, mirroring the existing `EmbeddingProviderError` → `502` precedent
+  - [x] No database migration, no chat persistence, no frontend change
+  - [x] All RAG/LLM calls mocked in tests — no real OpenAI API call, no OPENAI_API_KEY required
 
 NEXT (not yet approved/designed):
-- Single-document chat: authenticated HTTP endpoint calling `rag_service.answer_question()` (Stage B)
 - Chat persistence (`ChatSession`/`ChatMessage`, conversation memory)
 - Frontend chat UI
 - Vector index (HNSW/IVFFlat) — once multi-document/large-scale retrieval genuinely needs one

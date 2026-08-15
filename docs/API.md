@@ -185,3 +185,35 @@ Calling this endpoint again for an already-processed document **reprocesses** it
 **Response `502`** — the embedding provider failed (network error, timeout, API error, or an unexpected/malformed response). The response body is a generic message only — no raw provider error text, response body, or API key ever reaches the client.
 
 _Document parsing is now available on demand via this endpoint. Chunking, embeddings, RAG, and chat are not implemented — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._
+
+---
+
+## Chat (RAG)
+
+### `POST /documents/{document_id}/chat`
+Ask one question about one document owned by the current user. Stateless — a single question/answer exchange, not a conversation. Exposes the existing internal RAG pipeline (`rag_service.answer_question()`) through a thin authenticated endpoint.
+
+All routes below require `Authorization: Bearer <access_token>` (via `get_current_user`). A missing or invalid token returns `401`.
+
+**Path parameter:** `document_id` (UUID)
+
+**Request**
+```json
+{ "question": "What is the main contribution of this paper?" }
+```
+`question` must not be missing, empty, or whitespace-only.
+
+**Response `200`**
+```json
+{ "answer": "..." }
+```
+The response contains only the answer text — never retrieved chunks, chunk IDs, cosine distances, embeddings, prompts, or any OpenAI provider metadata. Citations/sources are not part of this response; that is an explicitly deferred, separate future milestone.
+
+If the document has no relevant chunks (e.g. it has not been processed yet, or its extracted text was empty), the response is still `200` with a deterministic fallback answer explaining that no relevant document context was found — the RAG service never calls the LLM in that case.
+
+**Response `401`** — missing or invalid token
+**Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical behavior to every other `{document_id}` route — indistinguishable from a nonexistent ID.
+**Response `422`** — `document_id` is not a valid UUID, *or* the request body is missing `question`, *or* `question` is empty or whitespace-only.
+**Response `502`** — the LLM provider failed (network error, timeout, API error, or an unexpected/malformed response). The response body is a generic message only — no raw provider error text, response body, or API key ever reaches the client.
+
+_This is a stateless single-question endpoint — there is no conversation history, session, or memory. Chat persistence and a frontend chat UI are separate, not-yet-implemented future milestones._

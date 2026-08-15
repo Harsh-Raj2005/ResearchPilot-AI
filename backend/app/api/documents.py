@@ -32,12 +32,15 @@ from app.core.config import settings
 from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
+from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.document import DocumentResponse
 from app.services import (
     document_processing_service,
     document_service,
     embedding_service,
+    llm_service,
     parse_service,
+    rag_service,
     storage_service,
 )
 
@@ -293,3 +296,64 @@ async def process_document(
         ) from exc
 
     return DocumentResponse.model_validate(document)
+
+
+@router.post("/{document_id}/chat", response_model=ChatResponse)
+async def chat_with_document(
+    document_id: uuid.UUID,
+    request: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChatResponse:
+    """
+    Ask one question about one document owned by the authenticated
+    user — Single-Document Chat API milestone. Stateless: no
+    conversation history, no session, no memory. Exposes the
+    existing internal rag_service.answer_question() pipeline
+    (RAG Foundation) through a thin authenticated HTTP endpoint.
+
+    Same indistinguishable-404 behavior as every other {document_id}
+    route: both a nonexistent document and one owned by another user
+    return an identical 404, via the existing
+    get_document_for_user() ownership check, reused as-is rather
+    than duplicated here. rag_service.answer_question() is never
+    called when ownership resolution fails.
+
+    The router treats rag_service as a black box: it does not
+    generate embeddings, query pgvector, retrieve chunks, construct
+    prompts, or call the LLM directly. All of that already belongs
+    to the RAG/embedding/retrieval/LLM service layers, unmodified
+    by this endpoint.
+
+    The response contains only the answer text — never retrieved
+    chunks, chunk IDs, cosine distances, embeddings, prompts, or any
+    OpenAI provider metadata. Citations/sources are an explicitly
+    deferred, separate future milestone.
+
+    Error mapping, mirroring this file's existing exception-translation
+    style (see /process above):
+    - LLMProviderError -> 502 (an upstream dependency — the LLM
+      provider — failed. Same category and treatment as
+      EmbeddingProviderError's existing 502 mapping above: a generic
+      client-facing message only, no raw provider exception text,
+      response body, or API key ever reaches the response.)
+    """
+    document = await document_service.get_document_for_user(
+        db, document_id=document_id, user_id=current_user.id
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
+    try:
+        answer = await rag_service.answer_question(
+            db, document=document, question=request.question
+        )
+    except llm_service.LLMProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Answer generation failed. Please try again.",
+        ) from exc
+
+    return ChatResponse(answer=answer)

@@ -1203,3 +1203,68 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   scope and unimplemented. This milestone adds the internal RAG
   pipeline only, the foundation single-document chat will eventually
   call.
+
+### Single-Document Chat API
+- Added `POST /api/v1/documents/{document_id}/chat` to
+  `backend/app/api/documents.py` — the first HTTP-facing surface for
+  the RAG pipeline. Authenticated via the existing `get_current_user`
+  dependency; ownership resolved via the existing
+  `document_service.get_document_for_user()`, reused exactly as-is —
+  no duplicated authorization logic, no new ownership helper. A
+  nonexistent document and one owned by another user both return an
+  identical `404`, matching every other `{document_id}` route.
+- Added `backend/app/schemas/chat.py` — `ChatRequest` (`question: str`,
+  a Pydantic field validator rejects empty/whitespace-only input at
+  the schema boundary, so validation failures return `422` before the
+  request ever reaches the router) and `ChatResponse` (`answer: str`
+  only — never retrieved chunks, chunk IDs, cosine distances,
+  embeddings, prompts, or OpenAI provider metadata; citations/sources
+  remain an explicitly deferred, separate future milestone).
+- **`rag_service.answer_question()` is treated as a black box** — the
+  router performs authentication, ownership resolution, and error
+  mapping only. No embedding generation, pgvector query, chunk
+  retrieval, prompt construction, or LLM call was moved into (or
+  duplicated inside) the router. `rag_service.py`, `llm_service.py`,
+  `retrieval_service.py`, and `embedding_service.py` were **not
+  modified** — confirmed unnecessary, not just unmodified by
+  omission.
+- **`LLMProviderError` → `502`**, mirroring the existing
+  `EmbeddingProviderError` → `502` precedent already established on
+  `/process` — same generic client-facing message, no raw provider
+  exception text, response body, or API key ever reaches the
+  response. No broad `except Exception` was introduced.
+- **Stateless by design** — no conversation ID, no session, no
+  history. Each request is independent; a document with no relevant
+  chunks still returns `200` with `rag_service`'s existing
+  deterministic `NO_CONTEXT_ANSWER` fallback (unchanged behavior,
+  simply surfaced over HTTP now).
+- **No database migration.** This milestone requires no schema
+  change; Alembic head unchanged at `368647c4431f`.
+- Added `backend/tests/test_document_chat_api.py` — 11 new tests,
+  following `test_document_process_api.py`'s existing conventions
+  exactly (isolated upload dir, signup+login for a bearer token, real
+  PDF upload via the actual upload endpoint) with one new mocking
+  boundary: `rag_service.answer_question()` itself, since this file
+  tests the router's orchestration (auth → ownership → RAG call →
+  response), not RAG's own internal correctness (already covered by
+  `test_rag_service.py`). Covers: successful request returns the
+  exact `{"answer": "..."}` shape; missing/invalid authentication
+  (`401`); nonexistent document (`404`, RAG never called); another
+  user's document (`404`, indistinguishable from nonexistent, RAG
+  never called); malformed UUID (`422`); missing/empty/whitespace-only
+  question (`422`); the mocked RAG service receives the exact
+  authorized `Document`, the exact question text, and a real DB
+  session; and `LLMProviderError` → `502` with no provider-detail
+  leakage (verified by asserting specific sensitive strings are
+  absent from the response body).
+- **211 backend tests passing overall (200 pre-existing + 11 new),
+  zero regressions.** `alembic current`/`heads` unchanged at
+  `368647c4431f (head)`; `alembic check` — "No new upgrade operations
+  detected." No real OpenAI API call anywhere in the suite; the RAG
+  service boundary is mocked at the exact point the router calls it.
+- No chat persistence, no frontend change, no streaming, no
+  WebSockets/SSE, no citations/sources schema, no rate limiting, no
+  new authentication mechanism, no provider abstraction, no RAG
+  Foundation redesign — all confirmed still out of scope and
+  unimplemented. This milestone adds one thin, stateless, authenticated
+  HTTP endpoint over the existing RAG pipeline, unchanged.
