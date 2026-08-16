@@ -47,12 +47,6 @@ _EMBEDDING_DIM = 1536
 
 
 @pytest.fixture(autouse=True)
-def _isolated_upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
-    yield tmp_path
-
-
-@pytest.fixture(autouse=True)
 def _mock_embed_texts(monkeypatch):
     """
     No test in this file ever calls the real OpenAI API. Each call to
@@ -137,12 +131,14 @@ async def test_process_document_persists_text_chunks_and_embeddings_together(
 # --- 2. Parse failure before any write: nothing changes ---
 
 
-async def test_process_document_parse_failure_persists_nothing(db_session: AsyncSession):
+async def test_process_document_parse_failure_persists_nothing(
+    db_session: AsyncSession, _mock_r2_storage
+):
     document = await _make_document(db_session, "corrupt", text="temp", filename="corrupt.pdf")
     # Overwrite the real PDF on disk with garbage bytes after upload —
     # same "manipulate real state out from under an in-flight object"
     # technique already used by this project's other failure tests.
-    Path(document.storage_path).write_bytes(b"not a real pdf")
+    _mock_r2_storage[document.storage_path] = b"not a real pdf"
 
     with pytest.raises(parse_service.ParseError):
         await document_processing_service.process_document(db_session, document=document)
@@ -157,7 +153,7 @@ async def test_process_document_parse_failure_persists_nothing(db_session: Async
 
 
 async def test_process_document_reprocessing_replaces_text_chunks_and_embeddings(
-    db_session: AsyncSession,
+    db_session: AsyncSession, _mock_r2_storage,
 ):
     document = await _make_document(db_session, "reprocess", text="Short original text.")
 
@@ -173,7 +169,7 @@ async def test_process_document_reprocessing_replaces_text_chunks_and_embeddings
     longer_pdf = pymupdf.open()
     page = longer_pdf.new_page()
     page.insert_text((72, 72), "A materially different, longer piece of text.")
-    Path(document.storage_path).write_bytes(longer_pdf.tobytes())
+    _mock_r2_storage[document.storage_path] = longer_pdf.tobytes()
     longer_pdf.close()
 
     second_text, second_chunks = await document_processing_service.process_document(
@@ -200,7 +196,7 @@ async def test_process_document_reprocessing_replaces_text_chunks_and_embeddings
 
 
 async def test_process_document_chunking_failure_leaves_previous_state_intact(
-    db_session: AsyncSession, monkeypatch
+    db_session: AsyncSession, monkeypatch, _mock_r2_storage
 ):
     """
     If chunking itself fails (before embed_texts() is ever called),
@@ -232,7 +228,7 @@ async def test_process_document_chunking_failure_leaves_previous_state_intact(
     changed_pdf = pymupdf.open()
     page = changed_pdf.new_page()
     page.insert_text((72, 72), "This text must NOT end up persisted.")
-    Path(document.storage_path).write_bytes(changed_pdf.tobytes())
+    _mock_r2_storage[document.storage_path] = changed_pdf.tobytes()
     changed_pdf.close()
 
     with pytest.raises(RuntimeError):
@@ -320,7 +316,7 @@ async def test_process_document_embedding_failure_on_first_processing_persists_n
 
 
 async def test_process_document_embedding_failure_during_reprocessing_leaves_previous_state_intact(
-    db_session: AsyncSession, monkeypatch
+    db_session: AsyncSession, monkeypatch, _mock_r2_storage
 ):
     """
     This is the critical case: a document is already successfully
@@ -355,7 +351,7 @@ async def test_process_document_embedding_failure_during_reprocessing_leaves_pre
     changed_pdf = pymupdf.open()
     page = changed_pdf.new_page()
     page.insert_text((72, 72), "This text must NOT end up persisted.")
-    Path(document.storage_path).write_bytes(changed_pdf.tobytes())
+    _mock_r2_storage[document.storage_path] = changed_pdf.tobytes()
     changed_pdf.close()
 
     with pytest.raises(embedding_service.EmbeddingProviderError):

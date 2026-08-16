@@ -25,15 +25,8 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.chat_message import ChatMessage
 from app.services import rag_service
-
-
-@pytest.fixture(autouse=True)
-def _isolated_upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
-    yield tmp_path
 
 
 def _make_pdf_bytes(text: str = "placeholder") -> bytes:

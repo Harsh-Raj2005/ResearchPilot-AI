@@ -3,9 +3,15 @@ Tests for POST /api/v1/documents/upload.
 
 Task 3B Checkpoint 3's first HTTP-level tests for documents —
 get_current_user's first real route consumer, exercised end-to-end
-via the httpx client fixture. Redirects settings.upload_dir to a
-tmp_path per test, same pattern as test_storage_service.py, so
-nothing touches the real dev storage/uploads/ folder.
+via the httpx client fixture.
+
+Deployment milestone: storage is now Cloudflare R2, not local disk.
+The shared, autouse `_mock_r2_storage` fixture in conftest.py already
+provides a fresh in-memory fake R2 backend for every test in this
+file — no per-file storage isolation fixture is needed anymore. Tests
+that need to inspect "what got stored" use that fixture's yielded
+dict (a plain `{object_key: bytes}` mapping) instead of walking a
+local upload_dir with Path.glob() (the old, pre-R2 approach).
 """
 import asyncio
 import uuid
@@ -15,12 +21,6 @@ import pytest
 from httpx import AsyncClient
 
 from app.core.config import settings
-
-
-@pytest.fixture(autouse=True)
-def _isolated_upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
-    yield tmp_path
 
 
 async def _signup_and_get_token(client: AsyncClient, *, email: str, username: str) -> str:
@@ -123,9 +123,9 @@ async def test_upload_response_does_not_leak_internal_storage_fields(client: Asy
     assert "user_id" not in body
 
 
-async def test_upload_actually_writes_file_to_disk(client: AsyncClient, tmp_path):
+async def test_upload_actually_writes_object_to_r2(client: AsyncClient, _mock_r2_storage):
     headers = await _auth_headers(client, email="disk@example.com", username="diskuser")
-    content = b"content that must actually exist on disk afterward"
+    content = b"content that must actually exist in storage afterward"
 
     response = await client.post(
         "/api/v1/documents/upload",
@@ -134,10 +134,13 @@ async def test_upload_actually_writes_file_to_disk(client: AsyncClient, tmp_path
     )
     assert response.status_code == 201
 
-    upload_dir = Path(settings.upload_dir)
-    saved_files = list(upload_dir.glob("*.pdf"))
-    assert len(saved_files) == 1
-    assert saved_files[0].read_bytes() == content
+    # _mock_r2_storage is conftest.py's shared fake-R2 store, keyed by
+    # the object key (storage_path) — exactly one object was written,
+    # with the exact uploaded bytes, matching the fake client's
+    # put_object() contract.
+    assert len(_mock_r2_storage) == 1
+    stored_bytes = next(iter(_mock_r2_storage.values()))
+    assert stored_bytes == content
 
 
 # --- validation failures ---
@@ -153,7 +156,9 @@ async def test_upload_rejects_disallowed_extension(client: AsyncClient):
     assert response.status_code == 422
 
 
-async def test_upload_rejects_oversized_file(client: AsyncClient, monkeypatch):
+async def test_upload_rejects_oversized_file(
+    client: AsyncClient, monkeypatch, _mock_r2_storage
+):
     monkeypatch.setattr(settings, "max_upload_size_mb", 0)  # 0MB -> anything nonempty is "too large"
     headers = await _auth_headers(client, email="big@example.com", username="biguser")
 
@@ -164,9 +169,8 @@ async def test_upload_rejects_oversized_file(client: AsyncClient, monkeypatch):
     )
 
     assert response.status_code == 413
-    upload_dir = Path(settings.upload_dir)
     # Nothing should have been written — the size check happens before storage_service is called.
-    assert not upload_dir.exists() or not list(upload_dir.glob("*"))
+    assert _mock_r2_storage == {}
 
 
 # --- multi-user isolation ---
@@ -527,7 +531,9 @@ async def test_download_document_invalid_id_format_rejected(client: AsyncClient)
     assert response.status_code == 422
 
 
-async def test_download_document_does_not_expose_internal_paths_on_success(client: AsyncClient):
+async def test_download_document_does_not_expose_internal_paths_on_success(
+    client: AsyncClient, _mock_r2_storage
+):
     headers = await _auth_headers(client, email="downloadleak@example.com", username="downloadleak")
     upload = await client.post(
         "/api/v1/documents/upload",
@@ -538,17 +544,19 @@ async def test_download_document_does_not_expose_internal_paths_on_success(clien
 
     response = await client.get(f"/api/v1/documents/{document_id}/file", headers=headers)
 
-    # No response header may contain the on-disk upload directory path
-    # or the internal UUID-based stored filename — only the original
-    # filename should appear (in Content-Disposition).
+    # No response header may contain the R2 object key (the internal,
+    # UUID-based storage identifier) or any R2 configuration detail —
+    # only the original filename should appear (in Content-Disposition).
     content_disposition = response.headers.get("content-disposition", "")
     assert "paper.pdf" in content_disposition
+    object_key = next(iter(_mock_r2_storage.keys()))
     for header_value in response.headers.values():
-        assert str(Path(settings.upload_dir)) not in header_value
+        assert object_key not in header_value
+        assert settings.r2_bucket_name not in header_value or settings.r2_bucket_name == ""
 
 
 async def test_download_document_missing_underlying_file_returns_server_error(
-    client: AsyncClient, tmp_path
+    client: AsyncClient, _mock_r2_storage
 ):
     headers = await _auth_headers(client, email="downloadmissingfile@example.com", username="downloadmissingfile")
     upload = await client.post(
@@ -558,18 +566,18 @@ async def test_download_document_missing_underlying_file_returns_server_error(
     )
     document_id = upload.json()["id"]
 
-    # Simulate DB/filesystem drift: the row survives, but the file
-    # underneath it is gone (e.g. manually deleted, volume reset).
-    upload_dir = Path(settings.upload_dir)
-    stored_files = list(upload_dir.glob("*.pdf"))
-    assert len(stored_files) == 1
-    stored_files[0].unlink()
+    # Simulate DB/storage drift: the row survives, but the object
+    # underneath it is gone (e.g. manually deleted from the bucket,
+    # bucket reset) — remove it directly from the fake R2 store.
+    assert len(_mock_r2_storage) == 1
+    _mock_r2_storage.clear()
 
     response = await client.get(f"/api/v1/documents/{document_id}/file", headers=headers)
 
     assert response.status_code == 500
-    # The 500 body must not leak the real filesystem path.
-    assert str(stored_files[0]) not in response.text
+    # The 500 body must not leak internal storage details (bucket name, object key).
+    body = response.json()
+    assert body["detail"] == "The stored file for this document could not be found."
 
 
 async def test_upload_list_detail_still_work_after_download_endpoint_added(client: AsyncClient):
@@ -642,7 +650,9 @@ async def test_delete_document_removes_it_from_list(client: AsyncClient):
     assert list_response.json() == []
 
 
-async def test_delete_document_removes_physical_file(client: AsyncClient):
+async def test_delete_document_removes_physical_file(
+    client: AsyncClient, _mock_r2_storage
+):
     headers = await _auth_headers(client, email="deletefile@example.com", username="deletefile")
     upload = await client.post(
         "/api/v1/documents/upload",
@@ -651,14 +661,11 @@ async def test_delete_document_removes_physical_file(client: AsyncClient):
     )
     document_id = upload.json()["id"]
 
-    upload_dir = Path(settings.upload_dir)
-    stored_files_before = list(upload_dir.glob("*.pdf"))
-    assert len(stored_files_before) == 1
+    assert len(_mock_r2_storage) == 1
 
     await client.delete(f"/api/v1/documents/{document_id}", headers=headers)
 
-    stored_files_after = list(upload_dir.glob("*.pdf"))
-    assert len(stored_files_after) == 0
+    assert len(_mock_r2_storage) == 0
 
 
 async def test_delete_document_requires_authentication(client: AsyncClient):
@@ -715,11 +722,13 @@ async def test_delete_document_invalid_id_format_rejected(client: AsyncClient):
     assert response.status_code == 422
 
 
-async def test_delete_document_with_already_missing_file_still_deletes_row(client: AsyncClient):
+async def test_delete_document_with_already_missing_file_still_deletes_row(
+    client: AsyncClient, _mock_r2_storage
+):
     """
     storage_service.delete_file() is already idempotent — deleting a
-    document whose underlying file was already removed (e.g. manual
-    deletion, volume reset) must still succeed in removing the stale
+    document whose underlying object was already removed (e.g. manual
+    deletion, bucket reset) must still succeed in removing the stale
     DB row, per that existing semantics.
     """
     headers = await _auth_headers(client, email="deletemissingfile@example.com", username="deletemissingfile")
@@ -730,10 +739,8 @@ async def test_delete_document_with_already_missing_file_still_deletes_row(clien
     )
     document_id = upload.json()["id"]
 
-    upload_dir = Path(settings.upload_dir)
-    stored_files = list(upload_dir.glob("*.pdf"))
-    assert len(stored_files) == 1
-    stored_files[0].unlink()  # simulate the file already being gone
+    assert len(_mock_r2_storage) == 1
+    _mock_r2_storage.clear()  # simulate the object already being gone
 
     response = await client.delete(f"/api/v1/documents/{document_id}", headers=headers)
     assert response.status_code == 204

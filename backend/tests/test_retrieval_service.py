@@ -21,12 +21,6 @@ from app.services import auth_service, document_service, retrieval_service
 _DIM = 1536
 
 
-@pytest.fixture(autouse=True)
-def _isolated_upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
-    yield tmp_path
-
-
 def _unit_vector(index: int, dim: int = _DIM) -> list[float]:
     """A deterministic one-hot-style vector: 1.0 at `index`, 0.0
     elsewhere. Two unit vectors at different indices are maximally

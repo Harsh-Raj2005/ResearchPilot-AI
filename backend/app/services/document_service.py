@@ -13,9 +13,19 @@ listing), get_document_for_user (Checkpoint 2 — detail),
 get_document_file_for_user (Checkpoint 3 — download), and
 delete_document_for_user (Checkpoint 4 — delete, this checkpoint).
 This completes the full CRUD surface planned for Document Management.
+
+Deployment milestone: storage_service's three mutating/reading
+functions (save_file, get_file_bytes, delete_file) are now async
+(Cloudflare R2 via aioboto3) — every call site below is awaited.
+get_document_file_for_user() also switched from
+storage_service.get_file_path() (which downloads to a temp file, for
+parse_service's Path-based contract) to storage_service.get_file_bytes()
+(which returns raw bytes directly) — the download endpoint builds an
+HTTP response body from bytes, not a local file path, so
+FastAPI's FileResponse no longer applies (see app/api/documents.py's
+download_document()).
 """
 import uuid
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,15 +43,15 @@ async def create_document(
     content_type: str,
 ) -> Document:
     """
-    Save the uploaded file to disk via storage_service, then insert
-    the corresponding Document row.
+    Save the uploaded file to object storage via storage_service, then
+    insert the corresponding Document row.
 
     Raises storage_service.UnsupportedFileTypeError or StorageError on
     failure — propagated as-is; the router translates these to HTTP
     responses, matching the project's existing service/router
     exception-translation pattern (see auth_service.py).
     """
-    saved_file = storage_service.save_file(
+    saved_file = await storage_service.save_file(
         content=content, original_filename=original_filename, content_type=content_type
     )
 
@@ -115,10 +125,10 @@ async def get_document_file_for_user(
     *,
     document_id: uuid.UUID,
     user_id: uuid.UUID,
-) -> tuple[Document, Path] | None:
+) -> tuple[Document, bytes] | None:
     """
-    Return the ownership-verified Document together with the Path to
-    its actual stored file, or None if no matching document exists
+    Return the ownership-verified Document together with its actual
+    stored file's raw bytes, or None if no matching document exists
     for this user.
 
     Reuses get_document_for_user() for the existence+ownership check
@@ -129,15 +139,15 @@ async def get_document_file_for_user(
 
     Raises storage_service.StoredFileNotFoundError if the Document row
     is real and owned by this user but its storage_path no longer
-    points to an actual file on disk — the router translates this to
+    points to a real object in storage — the router translates this to
     a server error distinct from the "document not found" 404, per
     the security requirement that these two situations not be conflated.
     """
     document = await get_document_for_user(db, document_id=document_id, user_id=user_id)
     if document is None:
         return None
-    file_path = storage_service.get_file_path(document.storage_path)
-    return document, file_path
+    file_bytes = await storage_service.get_file_bytes(document.storage_path)
+    return document, file_bytes
 
 
 async def delete_document_for_user(
@@ -147,7 +157,7 @@ async def delete_document_for_user(
     user_id: uuid.UUID,
 ) -> bool:
     """
-    Delete the stored file and the Document row for a document owned
+    Delete the stored object and the Document row for a document owned
     by user_id.
 
     Returns True if a matching document was found and deleted, False
@@ -157,39 +167,39 @@ async def delete_document_for_user(
     get_document_for_user() rather than a second ownership query.
 
     Deletion order — the central data-integrity decision for this
-    checkpoint, since a Postgres row and a disk file can't be removed
+    checkpoint, since a Postgres row and an R2 object can't be removed
     in one atomic transaction:
 
-    1. The file is deleted FIRST, via storage_service.delete_file(),
-       which is already idempotent (a missing file is treated as
+    1. The object is deleted FIRST, via storage_service.delete_file(),
+       which is already idempotent (a missing object is treated as
        success, not an error — see storage_service.py).
     2. Only once that succeeds (or was already a no-op) is the
        Document row deleted and the transaction committed.
 
     Why this order, not the reverse: if step 1 succeeds but step 2
     fails before commit, the result is a DB row referencing a
-    now-missing file. That is not a new failure mode — it's exactly
+    now-missing object. That is not a new failure mode — it's exactly
     what get_document_file_for_user() (Checkpoint 3) already handles
     cleanly (a distinct 500 via StoredFileNotFoundError, not a crash).
     The row stays visible and deletable, and retrying DELETE succeeds,
     since delete_file() is a no-op the second time. If the order were
-    reversed — row deleted and committed first, file deletion attempted
-    second — a failure in that second step orphans the file on disk
+    reversed — row deleted and committed first, object deletion attempted
+    second — a failure in that second step orphans the object in R2
     with no DB row ever able to reference it again: a silent,
     permanent storage leak with no retry path. File-first is strictly
     safer given delete_file()'s existing idempotency guarantee.
 
-    If delete_file() raises StorageError (a genuine filesystem failure,
-    distinct from "already missing"), that exception propagates and
-    the Document row is deliberately left untouched — "row still
-    there, file still there" is a safe, inspectable state; "row gone,
-    file orphaned" is not.
+    If delete_file() raises StorageError (a genuine storage-provider
+    failure, distinct from "already missing"), that exception
+    propagates and the Document row is deliberately left untouched —
+    "row still there, object still there" is a safe, inspectable
+    state; "row gone, object orphaned" is not.
     """
     document = await get_document_for_user(db, document_id=document_id, user_id=user_id)
     if document is None:
         return False
 
-    storage_service.delete_file(document.storage_path)
+    await storage_service.delete_file(document.storage_path)
 
     await db.delete(document)
     await db.commit()

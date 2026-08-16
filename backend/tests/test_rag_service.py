@@ -16,7 +16,6 @@ import pymupdf
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.document_chunk import DocumentChunk
 from app.models.document_text import DocumentText
 from app.services import (
@@ -28,12 +27,6 @@ from app.services import (
 )
 
 _DIM = 1536
-
-
-@pytest.fixture(autouse=True)
-def _isolated_upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
-    yield tmp_path
 
 
 def _unit_vector(index: int, dim: int = _DIM) -> list[float]:

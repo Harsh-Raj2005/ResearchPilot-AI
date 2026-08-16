@@ -99,9 +99,18 @@ the API. `401` reuses the existing logout-and-redirect handling;
 `docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
 for the task-by-task history.
 
+**Uploaded documents now live in Cloudflare R2, not local disk.**
+Local disk on a typical free-tier hosting container isn't durable
+across redeploys or restarts, so `storage_service.py` was migrated to
+async R2 access (via `aioboto3`) ahead of an actual production
+deployment. This is an application-code change only — nothing has
+been deployed yet; see `docs/PROJECT_CONTEXT.md` for the researched
+$0/month target deployment architecture (Vercel + Render + Neon + R2).
+
 ## Stack
 
 - **Backend:** FastAPI, SQLAlchemy (async), Alembic, PostgreSQL + pgvector
+- **Storage:** Cloudflare R2 (S3-compatible object storage) for uploaded documents
 - **Frontend:** React, TypeScript, Vite
 - **Local dev:** Docker Compose
 
@@ -118,7 +127,10 @@ docker compose up --build
 - Backend: http://localhost:8000 (docs at `/docs`)
 - Frontend: http://localhost:5173
 - Postgres: localhost:5432
-- Uploaded documents persist in the `uploads_data` Docker volume
+- Uploaded documents are stored in Cloudflare R2 — fill in the four
+  `R2_*` values in `backend/.env` with a real bucket's credentials to
+  exercise upload/process/download locally (automated tests never
+  need this; storage is always mocked in `pytest`)
 
 ### Option B — run services individually
 

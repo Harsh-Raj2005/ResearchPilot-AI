@@ -151,3 +151,58 @@ def test_extract_text_joins_pages_with_blank_line(tmp_path):
     result = parse_service.extract_text(pdf_path)
 
     assert "First\n\nSecond" in result
+
+
+# --- Windows file-handle regression (R2 stabilization) ---
+
+
+def test_extract_text_does_not_hold_file_handle_after_corrupt_pdf(tmp_path):
+    """
+    Regression test for the real cause of the Windows [WinError 32]
+    temp-file failure.
+
+    Previously extract_text() used `with pymupdf.open(file_path)`,
+    which leaks an OS file handle when the PDF is corrupt: open()
+    raises during construction, so the `with` body is never entered
+    and close() never runs. On Windows that left the file locked and
+    the caller's temp-file cleanup failed.
+
+    Deleting the file immediately after the ParseError is what proves
+    no handle is held. Be aware of the platform asymmetry, so this
+    test is not mistaken for stronger evidence than it is:
+
+      - On Windows it is a genuine regression test. Reintroducing the
+        path-mode open makes unlink() raise PermissionError here,
+        because the exception's traceback keeps the partially
+        constructed Document (and its handle) alive.
+      - On POSIX it will pass either way, since deleting a file with
+        an open handle is perfectly legal. It is kept running on Linux
+        only to confirm the success/failure paths still behave, NOT as
+        proof the leak is absent.
+
+    The actual guarantee comes from construction rather than from this
+    assertion: extract_text() now passes bytes to PyMuPDF, so PyMuPDF
+    never opens the file and there is no handle to leak on any
+    platform.
+    """
+    pdf_path = tmp_path / "corrupted.pdf"
+    pdf_path.write_bytes(b"this is not a real pdf, just garbage bytes")
+
+    with pytest.raises(parse_service.ParseError):
+        parse_service.extract_text(pdf_path)
+
+    pdf_path.unlink()  # must not raise PermissionError
+    assert not pdf_path.exists()
+
+
+def test_extract_text_does_not_hold_file_handle_after_success(tmp_path):
+    """Same guarantee on the success path: a parsed file must be
+    immediately deletable, with no lingering PyMuPDF handle."""
+    pdf_path = tmp_path / "valid.pdf"
+    _make_pdf(pdf_path, ["Some text"])
+
+    result = parse_service.extract_text(pdf_path)
+    assert "Some text" in result
+
+    pdf_path.unlink()  # must not raise PermissionError
+    assert not pdf_path.exists()

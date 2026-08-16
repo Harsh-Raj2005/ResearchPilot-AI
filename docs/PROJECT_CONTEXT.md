@@ -112,7 +112,7 @@ Log out and back in ──► document and chat history still there
 - Chat session + chat message models and endpoints.
 - RAG service (retrieval + prompt assembly + LLM call).
 - Frontend: document detail page, PDF viewer/annotation, chat panel, research workspace of any kind — deliberately not part of Task 3C's scope (a dedicated detail page was evaluated and rejected: `DocumentResponse`'s four fields already fit in a list row).
-- Deployment (Railway for backend/worker/Postgres/Redis, Vercel for frontend) — **nothing is deployed yet**.
+- Deployment (Vercel for frontend, Render for backend, Neon for Postgres+pgvector, Cloudflare R2 for document storage — see Section 3's Storage subsection and the Deployment Design Report for the full $0-cost architecture rationale) — **nothing is deployed yet**.
 - Sentry error tracking.
 - Google OAuth login (deferred to Phase 2/12 by design).
 - Refresh-token flow / `POST /auth/refresh`.
@@ -171,10 +171,14 @@ Unchanged this milestone.
 **Why `document_texts` is a separate table, not a column on `Document` — the central architectural decision of Checkpoints 2 and 3:** `Document` represents the file's metadata and stored source; `DocumentText` represents derived processing output. Keeping them separate means the existing `select(Document)`-based queries in `document_service.py` (`list_documents_for_user`, `get_document_for_user`, `get_document_file_for_user`) never risk silently loading large extracted text they don't need — SQLAlchemy's default column loading would pull *every* mapped column on `Document` on every one of those calls, so an `extracted_text` column there would have been a real, not hypothetical, performance cost on already-existing, already-live endpoints (`GET /documents` in particular). This was the deciding factor in Checkpoint 2's design review, evaluated against three candidate designs (column-on-Document, separate table, filesystem artifact) in a full comparison matrix.
 
 ### Storage
-**Local disk, fully operational, with persistent Docker storage.** Unchanged this milestone. `document_chunks.content` and `.embedding` both live in Postgres, same as `document_texts.content` — no filesystem artifact, for the same two-resource-consistency reasoning already established for extracted text.
+**Cloudflare R2 (S3-compatible object storage), this milestone — migrated from local disk.** Local disk on a Render/Railway-style container is not durable across redeploys or restarts; an uploaded PDF (and the ability to reprocess it) would silently vanish on every deploy. `storage_service.py` now talks to R2 via `aioboto3` (async, matching every other I/O path in this codebase). `Document.storage_path` remains a plain string column — its *meaning* changed from "a local filesystem path" to "an R2 object key," but no schema migration was needed since it was always just a string. `document_chunks.content` and `.embedding` still both live in Postgres, unaffected by this migration.
+
+Two distinct read paths, not one: `get_file_bytes()` (raw bytes, used by the download endpoint's `Response`) and `get_file_path()` (downloads to a temporary local file, used by `document_text_service.py` since `parse_service.extract_text()` still needs a real `Path` for PyMuPDF — that function was deliberately not touched by this milestone). The R2 bucket remains private; no public URLs, no presigned-URL redirects — the backend proxies all file bytes through its own authenticated endpoints, preserving the exact ownership-isolation guarantees already established for local disk.
 
 ### Deployment (planned, nothing live yet)
-Unchanged this milestone. **New operational requirement:** a real `OPENAI_API_KEY` must be set in any environment that calls `/process` — there is no default, and the app will fail at the embedding step (translated to a `502`) without one configured.
+**Target architecture researched and approved this milestone, for a hard $0/month mandatory hosting cost:** Vercel (frontend) + Render free web service (backend) + Neon free PostgreSQL with pgvector (database) + Cloudflare R2 (this milestone's file storage). Railway was explicitly ruled out (no longer offers a permanent free tier — a one-time 30-day/$5 trial, then mandatory paid usage). Render's own free Postgres was also ruled out (expires 30 days after creation). OpenAI usage remains separate, pay-as-you-go, already configured and verified locally with a real key. A real `OPENAI_API_KEY` must be set in any environment that calls `/process` — there is no default, and the app will fail at the embedding step (translated to a `502`) without one configured. **Nothing is actually deployed yet** — this milestone prepared the repository (R2 storage) for that future deployment; the Render/Vercel/Neon provisioning itself is a separate, not-yet-started milestone.
+
+**One known, small, unaddressed deployment blocker:** `backend/Dockerfile`'s `CMD` hard-codes `--port 8000` rather than reading the `$PORT` environment variable Render (and Railway) inject at runtime — a genuine, tiny configuration fix needed before the backend can actually deploy, deliberately left for the dedicated deployment milestone rather than made here, since it's unrelated to storage.
 
 ### Future microservices
 Unchanged this milestone — see prior sections.
@@ -566,8 +570,9 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - **Single-Document Chat API — thin authenticated `POST /api/v1/documents/{document_id}/chat` endpoint exposing `rag_service.answer_question()` over HTTP; new `ChatRequest`/`ChatResponse` schemas. Complete.**
 - **Chat Persistence — `ChatSession`/`ChatMessage` models; four new endpoints for creating sessions, listing sessions, sending messages, and retrieving history; history-aware RAG via `rag_service.answer_question_with_history()`; native multi-turn `llm_service.generate_answer()`; atomic user+assistant message persistence. Complete.**
 - **Frontend Chat UI — `ChatPage.tsx`, protected route `/documents/:documentId/chat`; consumes the four Chat Persistence endpoints (create/list sessions, send/list messages) via a new `services/chat.ts`; session sidebar + conversation view + composer; "Open Chat" link added to `DocumentsPage.tsx`. No backend changes. Complete.**
+- **Persistent Cloud Document Storage (Cloudflare R2) — `storage_service.py` migrated from local disk to R2 (async, via `aioboto3`); `document_service.py`, the download route, `pyproject.toml`, and `.env.example` updated to match; full test suite (`conftest.py`'s shared fake-R2 fixture + a rewritten `test_storage_service.py`) migrated off local-disk assumptions. Complete — application code only; actual Render/Vercel/Neon deployment is a separate, not-yet-started milestone.**
 
-**Git state:** everything through this milestone was implemented on top of the real, committed `0bf7de2` (`feat: add RAG foundation`, branch `main`), on top of the still-uncommitted Chat Persistence changes already in this working tree. This milestone's changes remain uncommitted, per its own instructions. `git diff --stat`/`--name-only`/`--check` (scoped to `frontend/`) were run for real, confirming the exact change surface; the backend was not modified.
+**Git state:** everything through this milestone was implemented on top of the real, committed `0bf7de2` (`feat: add RAG foundation`, branch `main`), on top of the still-uncommitted Chat Persistence and Frontend Chat UI changes already in this working tree. This milestone's changes remain uncommitted, per its own instructions.
 
 **Not started at all:**
 - Automatic parsing on upload — deliberately not built; a confirmed design decision, not an oversight.
@@ -579,20 +584,27 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - Document detail page, PDF viewer/annotation, any research-workspace UI.
 - Session titles, message editing/deletion, conversation summarization, streaming responses — all deliberately deferred.
 - Citations/sources schema — deliberately deferred, separate future milestone.
-- Any actual deployment.
+- Actual Render/Vercel/Neon provisioning and deployment — this milestone only prepared the application code (R2 storage); nothing is deployed yet.
 - Sentry integration.
 
-**A real, pre-existing backend gap was found (not fixed) during this milestone's manual E2E verification:** the persisted send-message route (`POST /documents/{document_id}/chat/sessions/{session_id}/messages`) catches `LLMProviderError` but not `EmbeddingProviderError` — a query-embedding failure (e.g., no `OPENAI_API_KEY` configured) surfaces as a raw `500` instead of the documented `502`. Confirmed via a real curl request against a running local server (traceback: `embedding_service._get_client()` → `openai.OpenAIError: Missing credentials` → uncaught by the router's `except llm_service.LLMProviderError` clause). Not fixed here, per this milestone's explicit "frontend-only, do not modify backend without asking" scope boundary — flagged for a future, separate, approved fix. The frontend degrades gracefully regardless (falls back to a generic "Request failed: 500" message via the existing `ApiError`/`extractErrorMessage` path — no crash, no leaked internals).
+**Two real, pre-existing gaps found (not fixed) during prior/this milestone's verification:**
+1. (Chat Persistence / Frontend Chat UI) The persisted send-message route catches `LLMProviderError` but not `EmbeddingProviderError` — a query-embedding failure surfaces as a raw `500` instead of the documented `502`. Still unfixed, still out of scope for this milestone.
+2. (This milestone) `backend/Dockerfile`'s `CMD` hard-codes `--port 8000` instead of reading `$PORT` — will block an actual Render/Railway deploy until fixed. Deliberately left for the dedicated deployment milestone, since it's unrelated to the R2 storage work this milestone scoped.
 
-**Partially completed work:** None. Frontend Chat UI is complete and fully verified for its approved scope.
+**Partially completed work:** None. Persistent Cloud Document Storage is complete and fully verified for its approved scope — application code only, no deployment performed.
 
 ---
 
 ## 13. NEXT TASK
 
-**Frontend Chat UI is now complete.** A user can log in, upload and process a document, open its chat workspace, create conversations, send messages, and see persisted history across page refreshes and logins. The natural next milestones, none yet designed or approved, include: fixing the `EmbeddingProviderError` → `502` gap found above, a first deployment pass, or DOCX/TXT text extraction. This section intentionally does not commit to one over the others, since no design-review conversation has happened yet for whichever comes next.
+**Persistent Cloud Document Storage (R2) is now complete.** The application no longer depends on local disk for uploaded documents, which was the single largest blocker to a real production deployment. The natural next milestone is the actual Render + Vercel + Neon deployment pass (provisioning the three services, applying migrations to Neon, configuring environment variables/CORS, fixing the Dockerfile's `$PORT` binding, and a full production smoke test) — this section intentionally does not begin that work here, since it requires real account access this environment doesn't have.
 
-**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, Single-Document Chat API, Chat Persistence, and Frontend Chat UI (do not re-litigate without a new reason):**
+**Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, Single-Document Chat API, Chat Persistence, Frontend Chat UI, and Persistent Cloud Document Storage (do not re-litigate without a new reason):**
+- **Storage is Cloudflare R2, not local disk, not a Render/Railway persistent volume** — chosen because it requires no per-provider volume configuration and keeps storage fully decoupled from whichever compute provider hosts the backend; see the Deployment Design Report for the full options comparison.
+- **`Document.storage_path` is unchanged in column type/name** — it now holds an R2 object key instead of a filesystem path; no migration was needed.
+- **Two distinct storage read functions** (`get_file_bytes()` for the download endpoint, `get_file_path()` for `parse_service`'s Path-based contract) — not unified into one, since their callers need genuinely different shapes.
+- **The R2 bucket stays private** — no public URLs, no presigned redirects; the backend proxies all bytes through its own authenticated endpoints.
+- **Target deployment architecture is Vercel + Render (free web service) + Neon (free Postgres+pgvector) + Cloudflare R2 — a hard $0/month mandatory hosting cost.** Railway and Render's own free Postgres are both explicitly ruled out (see the free-tier research report for the full disqualification rationale).
 - Separate `document_texts` table, not a `Document` column; separate `document_chunks` table, FK'd to `document_texts`, not `documents`.
 - 1:0..1 (`DocumentText`) / 1:many (`DocumentChunk`) via constraints, no versioning on either.
 - No status column, no `relationship()` anywhere — including on `ChatSession`/`ChatMessage`.
@@ -673,13 +685,20 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 ## 16. ENVIRONMENT VARIABLES
 
-**Unchanged this checkpoint.**
+**Storage migration this milestone.** `UPLOAD_DIR` removed; four new required variables added, matching `app/core/config.py`'s `Settings` class exactly:
+
+- `R2_ENDPOINT_URL`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET_NAME`
+
+No defaults for any of the four — every real environment (local dev included, once actually storing files against a real R2 bucket) must set them explicitly, mirroring `openai_api_key`'s existing "no default" precedent. `backend/.env.example` updated with placeholder-only entries (no real values). Tests never read these — the storage_service client boundary is always mocked (see `tests/test_storage_service.py` and the shared `_mock_r2_storage` autouse fixture in `tests/conftest.py`).
 
 ---
 
 ## 17. DEPENDENCIES
 
-**Unchanged this checkpoint.** No dependency added or removed.
+**One dependency added this milestone:** `aioboto3` (an async wrapper over `boto3`/`aiobotocore`), used exclusively inside `storage_service.py` for Cloudflare R2 access. Chosen over synchronous `boto3` because every other I/O path in this codebase (SQLAlchemy, the OpenAI SDK) is genuinely async, and a blocking synchronous network call to R2 inside an `async def` route handler would block the event loop for every other concurrent request while it ran.
 
 ---
 

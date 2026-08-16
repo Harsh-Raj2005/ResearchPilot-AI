@@ -94,10 +94,17 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Server is the source of truth — no client-side conversation store; refresh/logout/login all reload from the API
   - [x] 401/404/422/502 handled via the existing ApiError mechanism; no backend changes
   - [x] Frontend build + lint pass; full backend suite re-run, zero regressions
+- [x] Persistent Cloud Document Storage (Cloudflare R2)
+  - [x] `storage_service.py` rewritten for async R2 access via `aioboto3`; `Document.storage_path` now holds an R2 object key (no schema change — it was always a plain string)
+  - [x] `document_service.py` fixed to `await` the now-async storage calls; download path switched to `get_file_bytes()`
+  - [x] Download route rewritten to build a `Response` from bytes instead of `FileResponse` (no more local filesystem streaming)
+  - [x] `aioboto3` added to `pyproject.toml`; `.env.example` updated with `R2_ENDPOINT_URL`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/`R2_BUCKET_NAME` placeholders, `UPLOAD_DIR` removed
+  - [x] Shared, autouse fake-R2 fixture added to `conftest.py`; full test suite migrated off local-disk assumptions (`test_storage_service.py` rewritten; 4 other test files fixed)
+  - [x] Application code only — no actual Render/Vercel/Neon deployment performed
 
 NEXT (not yet approved/designed):
+- Actual Render + Vercel + Neon deployment (provisioning, migrations, env vars, CORS, `$PORT` Dockerfile fix, production smoke test)
 - Fix: `EmbeddingProviderError` not mapped to 502 on the persisted send-message route (found during Frontend Chat UI's manual E2E, not fixed — out of that milestone's scope)
 - Conversation summarization for long sessions
 - Vector index (HNSW/IVFFlat) — once multi-document/large-scale retrieval genuinely needs one
 - Multi-document search (Phase 2)
-- Deployment

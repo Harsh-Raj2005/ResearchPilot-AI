@@ -32,10 +32,18 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
 
     # --- Storage (Task 3B) ---
-    # Relative to the backend process's working directory. A Railway
-    # persistent volume mounted at deploy time is a follow-up, not a
-    # code change (see PROJECT_CONTEXT.md, Storage section).
-    upload_dir: str = "storage/uploads"
+    # Deployment milestone: moved from local disk to Cloudflare R2
+    # (S3-compatible object storage) — local disk on Render is not
+    # durable across redeploys/restarts. No default for any of these
+    # four: every real environment must set them explicitly, mirroring
+    # openai_api_key's own "no default" precedent. Tests never read
+    # these — the storage_service client boundary is always mocked
+    # (see tests/test_storage_service.py and every test that touches
+    # document upload/download/process).
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = ""
+    r2_endpoint_url: str = ""
     # Comma-separated, dot-prefixed. Extension-based validation only for
     # Phase 1 (python-magic content-sniffing deliberately deferred to
     # Phase 12 — see PROJECT_CONTEXT.md Section 11 #18).
@@ -68,6 +76,35 @@ class Settings(BaseSettings):
     # OpenAI documentation at deploy time, same discipline already
     # applied to embedding_model's own default.
     llm_model: str = "gpt-5.4-mini"
+
+    # --- Secret redaction ---
+    # Pydantic's default repr renders every field value, so ANY
+    # traceback, log line, or error that touches `settings` prints the
+    # OpenAI key, the database password, and the R2 credentials in
+    # plaintext. This is not hypothetical: a single AttributeError
+    # raised in the test suite printed the live OPENAI_API_KEY dozens
+    # of times in the pytest output.
+    #
+    # Overriding __repr__/__str__ keeps the settings object useful for
+    # debugging (non-secret fields still shown) while ensuring the
+    # secret values can only be reached by explicitly asking for the
+    # attribute, never incidentally.
+    _SECRET_FIELDS = (
+        "jwt_secret_key",
+        "openai_api_key",
+        "r2_access_key_id",
+        "r2_secret_access_key",
+        "database_url",  # embeds the DB password
+    )
+
+    def __repr__(self) -> str:
+        parts = []
+        for name in type(self).model_fields:
+            value = "'***REDACTED***'" if name in self._SECRET_FIELDS else repr(getattr(self, name))
+            parts.append(f"{name}={value}")
+        return f"{type(self).__name__}({', '.join(parts)})"
+
+    __str__ = __repr__
 
     model_config = SettingsConfigDict(
         env_file=".env",

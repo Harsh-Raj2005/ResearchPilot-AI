@@ -16,12 +16,6 @@ from app.models.chat_session import ChatSession
 from app.services import auth_service, chat_session_service, document_service
 
 
-@pytest.fixture(autouse=True)
-def _isolated_upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
-    yield tmp_path
-
-
 def _make_pdf_bytes(text: str = "placeholder") -> bytes:
     document = pymupdf.open()
     page = document.new_page()

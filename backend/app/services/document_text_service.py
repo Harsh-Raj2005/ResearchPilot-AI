@@ -27,12 +27,54 @@ committing independently and risking a DocumentText/DocumentChunk
 inconsistency if the second write fails. See PROJECT_CONTEXT.md for
 the full transaction-consistency rationale.
 """
+import asyncio
+from pathlib import Path
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
 from app.models.document_text import DocumentText
 from app.services import parse_service, storage_service
+
+
+async def _cleanup_temp_file(file_path: Path) -> None:
+    """
+    Deletes the temporary local file get_file_path() downloaded.
+
+    The real fix for the Windows [WinError 32] failure this project
+    hit lives in parse_service.extract_text(), not here: that function
+    now hands PyMuPDF a byte stream instead of a path, so PyMuPDF
+    never holds an OS-level file handle and nothing can remain locked.
+    (The earlier theory — that this was an mmap teardown race that
+    retrying would resolve — was wrong. The actual cause was that
+    `pymupdf.open()` raises during construction for a corrupt PDF, so
+    the surrounding `with` block was never entered and close() never
+    ran, leaking the handle indefinitely. No amount of retrying could
+    have fixed that.)
+
+    The bounded retry below is therefore no longer load-bearing; it is
+    kept only as cheap defence-in-depth against an unrelated transient
+    lock (e.g. an antivirus scanner briefly holding a newly written
+    file on Windows). It uses asyncio.sleep(), not time.sleep(), since
+    this runs inside an async call stack and must not block the event
+    loop.
+
+    A persistent failure is swallowed rather than raised: this is only
+    ever called from a `finally` block, and cleanup must never replace
+    or mask the real exception (or successful result) it is cleaning
+    up after. Note that the tests assert the temp file is genuinely
+    gone, so a regression in the parse_service fix would still surface
+    as a test failure rather than being silently hidden here.
+    """
+    for attempt in range(3):
+        try:
+            file_path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if attempt == 2:
+                return
+            await asyncio.sleep(0.1)
 
 
 async def _upsert_document_text(db: AsyncSession, *, document: Document) -> DocumentText:
@@ -46,6 +88,16 @@ async def _upsert_document_text(db: AsyncSession, *, document: Document) -> Docu
     raises (StoredFileNotFoundError, UnsupportedFormatError, or
     ParseError), it propagates unmodified and this table is never
     touched.
+
+    Deployment milestone: get_file_path() now downloads the object
+    from R2 to a temporary local file (parse_service.extract_text()
+    still needs a real Path — see storage_service.py's own docstring
+    for why that function is deliberately unmodified). This function
+    is responsible for deleting that temp file once parsing is done,
+    in a `finally` block, so a temp file never survives past a single
+    call — regardless of whether parsing succeeds or raises. See
+    _cleanup_temp_file()'s own docstring for a Windows-specific
+    cleanup nuance this milestone's own manual verification surfaced.
 
     An empty string ("") from a valid-but-textless PDF is a normal,
     successful result — persisted exactly like any other extracted
@@ -65,8 +117,11 @@ async def _upsert_document_text(db: AsyncSession, *, document: Document) -> Docu
     decides the transaction boundary. See parse_and_store_document_text()
     for the self-committing standalone entry point.
     """
-    file_path = storage_service.get_file_path(document.storage_path)
-    content = parse_service.extract_text(file_path)
+    file_path = await storage_service.get_file_path(document.storage_path)
+    try:
+        content = parse_service.extract_text(file_path)
+    finally:
+        await _cleanup_temp_file(file_path)
 
     result = await db.execute(
         select(DocumentText).where(DocumentText.document_id == document.id)

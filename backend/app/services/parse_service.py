@@ -88,13 +88,43 @@ def extract_text(file_path: Path) -> str:
     if not file_path.is_file():
         raise ParseError("The file could not be found.")
 
+    # Read the bytes ourselves and hand PyMuPDF a stream, rather than
+    # letting it open the path directly. This is NOT a stylistic
+    # preference — it fixes a real, reproducible resource leak:
+    #
+    #   with pymupdf.open(file_path) as document:
+    #
+    # looks safe, but when the PDF is corrupt, pymupdf.open() raises
+    # FileDataError *during construction* — so the `with` block is
+    # never entered and __exit__/close() never runs. MuPDF's
+    # OS-level file handle is then only released whenever the
+    # partially-constructed object happens to be garbage collected.
+    # On POSIX that's harmless (unlink() works against an open
+    # handle), but on Windows the file stays locked, so the caller's
+    # temp-file cleanup (see document_text_service._upsert_document_text)
+    # fails with PermissionError [WinError 32] and the temp file leaks.
+    # Verified directly: the `with` body is confirmed never entered on
+    # the corrupt-PDF path.
+    #
+    # Path.read_bytes() closes its own handle deterministically, and
+    # stream mode means PyMuPDF never opens the file at all — so
+    # nothing can remain locked regardless of platform or GC timing.
+    # extract_text()'s (file_path: Path) contract is unchanged, and
+    # extraction output is byte-identical to path mode (verified
+    # against multi-page, blank, and corrupt PDFs).
+    try:
+        data = file_path.read_bytes()
+    except OSError as exc:
+        raise ParseError("The file could not be read.") from exc
+
     try:
         # pymupdf.FileDataError covers both a corrupted/invalid PDF
         # and pymupdf.EmptyFileError (a subclass of it, for a
         # zero-byte file) — one except clause legitimately covers
         # both cases, verified directly against the actual library
-        # rather than assumed.
-        with pymupdf.open(file_path) as document:
+        # rather than assumed. Stream mode raises the identical
+        # exception type for the same inputs (verified).
+        with pymupdf.open(stream=data, filetype=_SUPPORTED_EXTENSION.lstrip(".")) as document:
             pages_text = [page.get_text().strip() for page in document]
     except pymupdf.FileDataError as exc:
         raise ParseError("The file is not a valid PDF or is corrupted.") from exc

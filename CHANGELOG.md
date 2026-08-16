@@ -1438,3 +1438,77 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   citations/source cards, no PDF viewer, no multi-document chat, no
   new authentication mechanism, no deployment — all confirmed still
   out of scope and unimplemented.
+
+### Persistent Cloud Document Storage (Cloudflare R2)
+- Rewrote `backend/app/services/storage_service.py` from synchronous
+  local-disk I/O to async Cloudflare R2 (S3-compatible object
+  storage) access via `aioboto3` — local disk on a Render/Railway-style
+  container is not durable across redeploys/restarts, so an uploaded
+  PDF (and the ability to reprocess it) would silently vanish on
+  every deploy. `Document.storage_path` is unchanged in column
+  type/name — it now holds an R2 object key instead of a filesystem
+  path, so no migration was needed. Two distinct read functions
+  remain (`get_file_bytes()` for the download endpoint,
+  `get_file_path()` for `parse_service`'s Path-based contract,
+  deliberately not touched by this milestone).
+- **Fixed a real bug found during inspection, not introduced by this
+  milestone's own work:** `document_service.py`'s three calls to
+  `storage_service.save_file()`/`get_file_path()`/`delete_file()`
+  were missing `await` — since those functions had already been made
+  async in an earlier pass, uploads/downloads/deletes were silently
+  broken. Also switched `get_document_file_for_user()` from
+  `get_file_path()` to `get_file_bytes()`, matching
+  `storage_service.py`'s own documented intent.
+- **Fixed a second real bug found during inspection:** the download
+  route in `documents.py` still used FastAPI's `FileResponse(path=...)`,
+  which requires a real local filesystem path — incompatible with R2.
+  Rewritten to build a plain `Response` from raw bytes, with an
+  explicit `Content-Disposition` header replicating exactly what
+  `FileResponse`'s own `filename=` parameter used to generate
+  automatically.
+- Added `aioboto3` to `backend/pyproject.toml` — the only new
+  dependency, used exclusively inside `storage_service.py`. Async,
+  not synchronous `boto3`, since every other I/O path in this
+  codebase (SQLAlchemy, the OpenAI SDK) is genuinely async.
+- Updated `backend/.env.example`: removed `UPLOAD_DIR`, added
+  `R2_ENDPOINT_URL`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/`R2_BUCKET_NAME`
+  placeholders (no real values). `app/core/config.py` already had
+  these four settings from earlier work — confirmed, not re-added.
+- **Testing required migrating off local-disk assumptions across the
+  whole suite, not just one file.** Added a shared, autouse
+  `_mock_r2_storage` fixture to `tests/conftest.py` — an in-memory
+  fake R2 client (mirroring this project's existing
+  `embedding_service`/`llm_service` fake-client pattern) so every
+  test that uploads/downloads/processes/deletes a document
+  transparently works without a real network call. Removed a now-broken
+  `_isolated_upload_dir` fixture (referencing the removed
+  `settings.upload_dir`) from 9 test files. Rewrote local-disk
+  manipulation in `test_documents_api.py` (7 locations),
+  `test_document_process_api.py`, `test_document_text_service.py` (2
+  tests), and `test_document_processing_service.py` (4 tests) to use
+  the fake R2 store instead of `Path`/`unlink`/`write_bytes`.
+  Completely rewrote `test_storage_service.py` (23 tests) for the
+  async R2 API.
+- Fixed stale "disk"/"filesystem" wording in `docs/API.md` (6
+  locations) and a stale "Railway for backend/worker/Postgres/Redis"
+  line in `docs/PROJECT_CONTEXT.md` left over from an early planning
+  snapshot, contradicting this project's actual, current
+  no-Redis/no-worker architecture.
+- **293 backend tests passing overall (288 pre-existing/pre-fix +
+  net new from the storage_service rewrite), zero regressions.**
+  `alembic current`/`heads` both `f54da3d255ec (head)`, `alembic
+  check` — "No new upgrade operations detected" (no schema change —
+  `storage_path` was always a plain string column). No real R2 or
+  OpenAI API call anywhere in the automated suite.
+- **No Render/Vercel/Neon deployment performed.** This milestone is
+  application-code preparation only. One known, small deployment
+  blocker deliberately left unfixed here (out of this milestone's
+  scope): `backend/Dockerfile`'s `CMD` hard-codes `--port 8000`
+  instead of reading `$PORT`, which Render (and Railway) require at
+  runtime.
+- R2 bucket remains private throughout — no public URLs, no
+  presigned-URL redirects; the backend proxies all file bytes through
+  its own authenticated endpoints, preserving the exact
+  ownership-isolation guarantees already established for local disk.
+  R2 credentials are backend-only environment variables — never
+  exposed to the frontend, Vercel, or committed to Git.

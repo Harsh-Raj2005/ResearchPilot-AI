@@ -25,7 +25,7 @@ See PROJECT_CONTEXT.md for the design rationale (Checkpoint 5).
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -139,7 +139,7 @@ async def download_document(
     document_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> FileResponse:
+) -> Response:
     """
     Return the actual stored file for a document owned by the
     authenticated user.
@@ -148,10 +148,21 @@ async def download_document(
     "doesn't exist" vs. "belongs to someone else" — both flow through
     the same get_document_for_user() ownership check inside
     document_service.get_document_file_for_user(). A document that
-    exists and is owned by the caller, but whose file is missing from
-    disk, is a different situation (a server-side data integrity
-    problem, not a client error) and gets a distinct 500 — without
-    ever revealing the filesystem path in the response.
+    exists and is owned by the caller, but whose object is missing
+    from storage, is a different situation (a server-side data
+    integrity problem, not a client error) and gets a distinct 500 —
+    without ever revealing the storage object key or bucket in the
+    response.
+
+    Deployment milestone: builds the response from raw bytes via a
+    plain Response, not FastAPI's FileResponse — FileResponse streams
+    from a real local filesystem path, which no longer exists now
+    that storage is Cloudflare R2 (see storage_service.py's own
+    docstring for why get_file_bytes() and get_file_path() are two
+    distinct functions). Content-Disposition is set explicitly here
+    to preserve the exact same "attachment; filename=..." contract
+    FileResponse's own filename= parameter used to generate
+    automatically.
 
     No response_model here: the body is the file itself, not a JSON
     DocumentResponse — the two are mutually exclusive for this route.
@@ -171,11 +182,13 @@ async def download_document(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
         )
 
-    document, file_path = result
-    return FileResponse(
-        path=file_path,
+    document, file_bytes = result
+    return Response(
+        content=file_bytes,
         media_type=document.content_type,
-        filename=document.original_filename,
+        headers={
+            "Content-Disposition": f'attachment; filename="{document.original_filename}"'
+        },
     )
 
 

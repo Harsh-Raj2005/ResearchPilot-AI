@@ -18,11 +18,6 @@ from app.models.document_text import DocumentText
 from app.services import auth_service, chunk_service, document_service
 
 
-@pytest.fixture(autouse=True)
-def _isolated_upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
-    yield tmp_path
-
 # --- Pure chunk_text() tests ---
 
 

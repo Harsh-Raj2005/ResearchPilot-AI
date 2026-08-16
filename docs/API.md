@@ -76,9 +76,9 @@ Upload a PDF, DOCX, or TXT file (multipart/form-data).
 Note: the response never includes `stored_filename` or `storage_path` — those are internal storage details, not exposed to clients.
 
 **Response `401`** — missing or invalid token
-**Response `413`** — file exceeds `MAX_UPLOAD_SIZE_MB` (default 20MB). Nothing is written to disk when this happens.
-**Response `422`** — file extension not in the allowed list (`.pdf`, `.docx`, `.txt`). Nothing is written to disk when this happens.
-**Response `500`** — a filesystem error occurred while saving the file (disk full, permission denied, etc.)
+**Response `413`** — file exceeds `MAX_UPLOAD_SIZE_MB` (default 20MB). Nothing is uploaded to storage when this happens.
+**Response `422`** — file extension not in the allowed list (`.pdf`, `.docx`, `.txt`). Nothing is uploaded to storage when this happens.
+**Response `500`** — a storage-provider error occurred while saving the file (network failure, credential/permission error, provider outage).
 
 _Validation is extension-based only for Phase 1 — the declared `Content-Type` is trusted as-is and stored for display, not independently verified against file content (`python-magic` content-sniffing is deferred to Phase 12)._
 
@@ -141,7 +141,7 @@ Return the actual stored file for a document owned by the current user.
 **Response `401`** — missing or invalid token
 **Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical to the detail endpoint's 404 behavior — indistinguishable from a nonexistent ID.
 **Response `422`** — `document_id` is not a valid UUID
-**Response `500`** — the document row exists and is owned by the caller, but its file is missing from disk (e.g. manually deleted, volume reset). The response never includes the server-side filesystem path.
+**Response `500`** — the document row exists and is owned by the caller, but its object is missing from storage (e.g. manually deleted, bucket reset). The response never includes the storage object key or bucket name.
 
 ### `DELETE /documents/{document_id}`
 Delete a document owned by the current user — removes both the stored file and the database record.
@@ -153,7 +153,7 @@ Delete a document owned by the current user — removes both the stored file and
 **Response `401`** — missing or invalid token
 **Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical behavior to detail/download. **A second `DELETE` of an already-deleted document also returns `404`** (not another `204`) — once deleted, the document genuinely no longer exists for this user.
 **Response `422`** — `document_id` is not a valid UUID
-**Response `500`** — the file exists but could not be deleted for a genuine filesystem reason (not "already missing" — see above). The database record is deliberately left untouched in this case.
+**Response `500`** — the file exists but could not be deleted for a genuine storage-provider reason (not "already missing" — see above). The database record is deliberately left untouched in this case.
 
 _This completes the full Document Management CRUD surface (upload, list, detail, download, delete)._
 
@@ -181,7 +181,7 @@ Calling this endpoint again for an already-processed document **reprocesses** it
 **Response `401`** — missing or invalid token
 **Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical behavior to detail/download/delete — indistinguishable from a nonexistent ID.
 **Response `422`** — `document_id` is not a valid UUID, *or* the document's stored file has an unsupported format for parsing (currently PDF-only), *or* the file exists but is corrupted/invalid and cannot be parsed.
-**Response `500`** — the document row exists and is owned by the caller, but its stored file is missing from disk (a server-side data-integrity problem, not a client error — identical in spirit to download's `500` for the same condition).
+**Response `500`** — the document row exists and is owned by the caller, but its stored object is missing from storage (a server-side data-integrity problem, not a client error — identical in spirit to download's `500` for the same condition).
 **Response `502`** — the embedding provider failed (network error, timeout, API error, or an unexpected/malformed response). The response body is a generic message only — no raw provider error text, response body, or API key ever reaches the client.
 
 _Document parsing is now available on demand via this endpoint. Chunking, embeddings, RAG, and chat are not implemented — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._

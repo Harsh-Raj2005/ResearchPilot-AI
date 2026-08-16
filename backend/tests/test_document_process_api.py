@@ -32,12 +32,6 @@ from app.services import embedding_service
 
 
 @pytest.fixture(autouse=True)
-def _isolated_upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
-    yield tmp_path
-
-
-@pytest.fixture(autouse=True)
 def _mock_embed_texts(monkeypatch):
     """No test in this file ever calls the real OpenAI API."""
 
@@ -257,21 +251,19 @@ async def test_process_document_corrupted_pdf_returns_422(
 
 
 async def test_process_document_missing_stored_file_returns_500(
-    client: AsyncClient, db_session: AsyncSession, tmp_path
+    client: AsyncClient, db_session: AsyncSession, _mock_r2_storage
 ):
     headers = await _auth_headers(client, email="processnofile@example.com", username="processnofile")
     document_id = await _upload_pdf(
         client, headers, filename="willvanish.pdf", content=_make_pdf_bytes(["Soon gone"])
     )
 
-    # Remove the file out from under the Document row — simulates a
-    # real DB/filesystem drift (manual deletion, volume reset), same
+    # Remove the object out from under the Document row — simulates a
+    # real DB/storage drift (manual deletion, bucket reset), same
     # scenario download's existing StoredFileNotFoundError handling
     # already covers.
-    upload_dir = Path(settings.upload_dir)
-    stored_files = list(upload_dir.glob("*.pdf"))
-    assert len(stored_files) == 1
-    stored_files[0].unlink()
+    assert len(_mock_r2_storage) == 1
+    _mock_r2_storage.clear()
 
     response = await client.post(f"/api/v1/documents/{document_id}/process", headers=headers)
 
