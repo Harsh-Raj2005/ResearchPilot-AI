@@ -557,6 +557,40 @@ async def test_send_message_llm_provider_error_returns_502(client: AsyncClient, 
     assert "api key" not in body["detail"].lower()
 
 
+async def test_send_message_embedding_provider_error_returns_502(
+    client: AsyncClient, monkeypatch
+):
+    """
+    Phase 1 hardening regression test: rag_service.answer_question_with_history()
+    calls embedding_service.embed_query() before retrieval, and that
+    failure was previously uncaught by this route — it fell through
+    to a raw 500 instead of the documented 502. Mirrors the
+    LLMProviderError test above exactly.
+    """
+    from app.services import embedding_service
+
+    headers = await _auth_headers(
+        client, email="sendembedfail@example.com", username="sendembedfail"
+    )
+    document_id = await _upload_pdf(client, headers)
+    session_id = await _create_session(client, headers, document_id)
+    error = embedding_service.EmbeddingProviderError(
+        "raw provider stack trace / api key / internal detail that must never leak"
+    )
+    _mock_answer_question_with_history(monkeypatch, error=error)
+
+    response = await client.post(
+        f"/api/v1/documents/{document_id}/chat/sessions/{session_id}/messages",
+        json={"question": "question"},
+        headers=headers,
+    )
+
+    assert response.status_code == 502
+    body = response.json()
+    assert "raw provider stack trace" not in body["detail"]
+    assert "api key" not in body["detail"].lower()
+
+
 async def test_send_message_llm_failure_persists_no_messages_atomicity(
     client: AsyncClient, db_session: AsyncSession, monkeypatch
 ):
@@ -603,6 +637,48 @@ async def test_send_message_llm_failure_persists_no_messages_atomicity(
     assert result.scalars().all() == []
 
     # Also confirmed via the HTTP-level GET, using a fresh request:
+    response = await client.get(
+        f"/api/v1/documents/{document_id}/chat/sessions/{session_id}/messages", headers=headers
+    )
+    assert response.json() == []
+
+
+async def test_send_message_embedding_failure_persists_no_messages_atomicity(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """
+    Same atomicity guarantee as the LLMProviderError test above, but
+    for the EmbeddingProviderError path this Phase 1 hardening pass
+    fixed — proves the fix didn't just add the 502 status code while
+    accidentally leaving the staged user message committed. Mirrors
+    that test's structure exactly, including its documented
+    get_db-override rollback caveat.
+    """
+    from app.services import embedding_service
+
+    headers = await _auth_headers(
+        client, email="sendembedatomicfail@example.com", username="sendembedatomicfail"
+    )
+    document_id = await _upload_pdf(client, headers)
+    session_id = await _create_session(client, headers, document_id)
+    error = embedding_service.EmbeddingProviderError("simulated provider failure")
+    _mock_answer_question_with_history(monkeypatch, error=error)
+
+    response = await client.post(
+        f"/api/v1/documents/{document_id}/chat/sessions/{session_id}/messages",
+        json={"question": "this question must not survive"},
+        headers=headers,
+    )
+
+    assert response.status_code == 502
+
+    await db_session.rollback()
+
+    result = await db_session.execute(
+        select(ChatMessage).where(ChatMessage.chat_session_id == uuid.UUID(session_id))
+    )
+    assert result.scalars().all() == []
+
     response = await client.get(
         f"/api/v1/documents/{document_id}/chat/sessions/{session_id}/messages", headers=headers
     )

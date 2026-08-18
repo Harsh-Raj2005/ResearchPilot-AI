@@ -276,3 +276,37 @@ async def test_chat_llm_provider_error_returns_502(client: AsyncClient, monkeypa
     body = response.json()
     assert "raw provider stack trace" not in body["detail"]
     assert "api key" not in body["detail"].lower()
+
+
+async def test_chat_embedding_provider_error_returns_502(client: AsyncClient, monkeypatch):
+    """
+    Phase 1 hardening regression test: rag_service.answer_question()
+    calls embedding_service.embed_query() before retrieval, and that
+    failure was previously uncaught by this route — it fell through
+    to a raw 500 instead of the documented 502. Mirrors the existing
+    LLMProviderError test above exactly, same fake-RAG-boundary
+    mocking approach (mocking rag_service.answer_question() itself,
+    not embedding_service directly, since this route treats
+    rag_service as a black box and never imports embedding_service).
+    """
+    from app.services import embedding_service
+
+    headers = await _auth_headers(
+        client, email="chatembedfail@example.com", username="chatembedfail"
+    )
+    document_id = await _upload_pdf(client, headers)
+    error = embedding_service.EmbeddingProviderError(
+        "raw provider stack trace / api key / internal detail that must never leak"
+    )
+    _mock_answer_question(monkeypatch, error=error)
+
+    response = await client.post(
+        f"/api/v1/documents/{document_id}/chat",
+        json={"question": "question"},
+        headers=headers,
+    )
+
+    assert response.status_code == 502
+    body = response.json()
+    assert "raw provider stack trace" not in body["detail"]
+    assert "api key" not in body["detail"].lower()
