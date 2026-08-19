@@ -233,6 +233,16 @@ export default function ChatPage() {
         <h2 className="workspace-title">
           {documentError ? documentError : document ? document.original_filename : "Loading…"}
         </h2>
+        <Button
+          variant="secondary"
+          style={{ marginLeft: "auto" }}
+          onClick={() => {
+            logout();
+            navigate(ROUTES.login);
+          }}
+        >
+          Log out
+        </Button>
       </header>
 
       <div className="chat-layout">
