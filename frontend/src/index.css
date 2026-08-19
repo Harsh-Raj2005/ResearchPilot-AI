@@ -11,6 +11,33 @@
   --shadow:
     rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
 
+  /* Phase 1 Frontend UI Milestone 1 — additive tokens, used by
+     LandingPage/LoginPage/SignupPage/Button/FormField only. Existing
+     color tokens above are untouched; DocumentsPage/ChatPage continue
+     to use their own inline styles until their own milestone. */
+  --surface: #fafafa;
+  --error: #c0392b;
+  --error-bg: rgba(192, 57, 43, 0.08);
+  --success: #1e8e5a;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+
+  --text-display: 600 40px/1.15 var(--heading);
+  --text-heading: 600 24px/1.25 var(--heading);
+  --text-subheading: 500 17px/1.4 var(--sans);
+  --text-body: 400 16px/1.55 var(--sans);
+  --text-caption: 400 14px/1.4 var(--sans);
+  --text-meta: 500 13px/1.3 var(--sans);
+
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
@@ -43,6 +70,11 @@
     --social-bg: rgba(47, 48, 58, 0.5);
     --shadow:
       rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+
+    --surface: #1c1d24;
+    --error: #ff6b5e;
+    --error-bg: rgba(255, 107, 94, 0.12);
+    --success: #4ade80;
   }
 
   #social .button-icon {
@@ -108,4 +140,550 @@ code {
   line-height: 135%;
   padding: 4px 8px;
   background: var(--code-bg);
+}
+
+/* ==========================================================
+   Phase 1 Frontend UI Milestone 1
+   Used only by: Button, FormField, LandingPage, LoginPage,
+   SignupPage. DocumentsPage/ChatPage are untouched by this
+   milestone and keep their own existing inline styles.
+   ========================================================== */
+
+/* --- Button --- */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font: var(--text-subheading);
+  padding: var(--space-3) var(--space-6);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  text-decoration: none;
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.button--primary:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+.button--secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-h);
+}
+
+.button--secondary:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.button--full-width {
+  width: 100%;
+}
+
+/* --- FormField --- */
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  text-align: left;
+}
+
+.form-field + .form-field {
+  margin-top: var(--space-4);
+}
+
+.auth-card form .button {
+  margin-top: var(--space-6);
+}
+
+.form-field__label {
+  font: var(--text-meta);
+  color: var(--text-h);
+}
+
+.form-field__input {
+  font: var(--text-body);
+  color: var(--text-h);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease;
+}
+
+.form-field__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.form-field__input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.form-field__error {
+  font: var(--text-caption);
+  color: var(--error);
+}
+
+/* --- Auth pages (Login / Signup) --- */
+
+.auth-page {
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  box-sizing: border-box;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  padding: var(--space-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.auth-card h1 {
+  font: var(--text-heading);
+  margin: 0 0 var(--space-2);
+  text-align: left;
+}
+
+.auth-card__subtitle {
+  font: var(--text-body);
+  color: var(--text);
+  margin: 0 0 var(--space-6);
+}
+
+.auth-card__form-error {
+  font: var(--text-caption);
+  color: var(--error);
+  background: var(--error-bg);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.auth-card__footer {
+  font: var(--text-caption);
+  color: var(--text);
+  margin: var(--space-6) 0 0;
+  text-align: center;
+}
+
+.auth-card__footer a {
+  color: var(--accent);
+}
+
+@media (max-width: 480px) {
+  .auth-card {
+    padding: var(--space-6) var(--space-4);
+  }
+}
+
+/* --- Landing page --- */
+
+.landing {
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-8) var(--space-6);
+  box-sizing: border-box;
+}
+
+.landing__content {
+  max-width: 640px;
+  text-align: center;
+}
+
+.landing__eyebrow {
+  font: var(--text-meta);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0 0 var(--space-4);
+}
+
+.landing__title {
+  font: var(--text-display);
+  color: var(--text-h);
+  margin: 0 0 var(--space-4);
+  text-align: center;
+}
+
+.landing__description {
+  font: var(--text-subheading);
+  color: var(--text);
+  margin: 0 0 var(--space-8);
+}
+
+.landing__actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+@media (max-width: 480px) {
+  .landing__title {
+    font-size: 32px;
+  }
+
+  .landing__actions {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .landing__actions .button {
+    width: 100%;
+  }
+}
+
+/* ==========================================================
+   Documents & Chat workspaces
+   Used only by DocumentsPage.tsx and ChatPage.tsx — extends the
+   token system above rather than introducing a second one.
+   ========================================================== */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- shared workspace header (Documents + Chat) --- */
+
+.workspace-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-6);
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-title {
+  font: var(--text-heading);
+  color: var(--text-h);
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-subtitle {
+  font: var(--text-caption);
+  color: var(--text);
+}
+
+/* --- Documents: upload area --- */
+
+.upload-area {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-6);
+  text-align: center;
+  background: var(--surface);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.upload-area--dragover {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.upload-area__label {
+  display: block;
+  font: var(--text-subheading);
+  color: var(--text-h);
+  margin-bottom: var(--space-2);
+}
+
+.upload-area__hint {
+  font: var(--text-caption);
+  color: var(--text);
+  margin: var(--space-2) 0 0;
+}
+
+/* --- Documents: card list --- */
+
+.doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.doc-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+}
+
+.doc-card__info {
+  min-width: 0;
+  flex: 1;
+}
+
+.doc-card__filename {
+  font: var(--text-subheading);
+  color: var(--text-h);
+  margin: 0 0 var(--space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-card__meta {
+  font: var(--text-meta);
+  color: var(--text);
+  margin: 0;
+}
+
+.doc-card__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.doc-card__status {
+  width: 100%;
+  font: var(--text-caption);
+  margin: var(--space-2) 0 0;
+}
+
+.doc-card__status--success {
+  color: var(--success);
+}
+
+.doc-card__status--error {
+  color: var(--error);
+}
+
+.button--danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.button--danger:hover:not(:disabled) {
+  background: var(--error-bg);
+}
+
+.empty-state {
+  padding: var(--space-8);
+  text-align: center;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.form-error {
+  font: var(--text-caption);
+  color: var(--error);
+  margin: var(--space-2) 0 0;
+}
+
+@media (max-width: 640px) {
+  .doc-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .doc-card__actions {
+    justify-content: flex-start;
+  }
+}
+
+/* --- Chat workspace layout --- */
+
+.chat-page {
+  display: flex;
+  flex-direction: column;
+  height: 100svh;
+}
+
+.chat-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding: var(--space-4);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.session-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-h);
+  font: var(--text-caption);
+  cursor: pointer;
+}
+
+.session-item:hover {
+  background: var(--surface);
+}
+
+.session-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.session-item--active {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+
+.chat-conversation {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat-empty {
+  margin: auto;
+  color: var(--text);
+  font: var(--text-body);
+}
+
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-6);
+}
+
+.message-row {
+  display: flex;
+  margin-bottom: var(--space-3);
+}
+
+.message-row--user {
+  justify-content: flex-end;
+}
+
+.message-row--assistant {
+  justify-content: flex-start;
+}
+
+.message-bubble {
+  max-width: 70%;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: left;
+  font: var(--text-body);
+}
+
+.message-row--user .message-bubble {
+  background: var(--accent-bg);
+  color: var(--text-h);
+}
+
+.message-row--assistant .message-bubble {
+  background: var(--code-bg);
+  color: var(--text-h);
+}
+
+.composer {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-6);
+  border-top: 1px solid var(--border);
+}
+
+.composer__input {
+  flex: 1;
+  resize: none;
+  font: var(--text-body);
+  color: var(--text-h);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  box-sizing: border-box;
+}
+
+.composer__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+@media (max-width: 768px) {
+  .chat-layout {
+    flex-direction: column;
+  }
+
+  .chat-sidebar {
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: visible;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .session-item {
+    width: auto;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .message-bubble {
+    max-width: 88%;
+  }
 }

@@ -2,6 +2,8 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { ROUTES } from "../constants/routes";
+import Button from "../components/Button";
+import FormField from "../components/FormField";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -27,41 +29,42 @@ export default function LoginPage() {
   }
 
   return (
-    <main style={{ fontFamily: "sans-serif", padding: "2rem", maxWidth: 360 }}>
-      <h1>Log in</h1>
-      <form onSubmit={handleSubmit}>
-        <div>
-          <label htmlFor="email">Email</label>
-          <br />
-          <input
+    <main className="auth-page">
+      <div className="auth-card">
+        <h1>Log in</h1>
+        <p className="auth-card__subtitle">Welcome back to ResearchPilot AI.</p>
+        <form onSubmit={handleSubmit}>
+          <FormField
             id="email"
+            label="Email"
             type="email"
+            autoComplete="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
           />
-        </div>
-        <div style={{ marginTop: "0.75rem" }}>
-          <label htmlFor="password">Password</label>
-          <br />
-          <input
+          <FormField
             id="password"
+            label="Password"
             type="password"
+            autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
           />
-        </div>
-        {error && (
-          <p style={{ color: "crimson", marginTop: "0.75rem" }}>{error}</p>
-        )}
-        <button type="submit" disabled={isSubmitting} style={{ marginTop: "1rem" }}>
-          {isSubmitting ? "Logging in..." : "Log in"}
-        </button>
-      </form>
-      <p style={{ marginTop: "1rem" }}>
-        No account? <Link to={ROUTES.signup}>Sign up</Link>
-      </p>
+          {error && (
+            <p className="auth-card__form-error" role="alert">
+              {error}
+            </p>
+          )}
+          <Button type="submit" isLoading={isSubmitting} fullWidth>
+            {isSubmitting ? "Logging in…" : "Log in"}
+          </Button>
+        </form>
+        <p className="auth-card__footer">
+          No account? <Link to={ROUTES.signup}>Sign up</Link>
+        </p>
+      </div>
     </main>
   );
 }

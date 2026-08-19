@@ -27,6 +27,7 @@ import { ROUTES, chatPath } from "../constants/routes";
 import { ApiError } from "../services/api";
 import * as documentService from "../services/document";
 import type { DocumentResponse } from "../types/document";
+import Button from "../components/Button";
 
 const PAGE_SIZE = 20;
 
@@ -206,111 +207,105 @@ export default function DocumentsPage() {
   }
 
   return (
-    <main style={{ fontFamily: "sans-serif", padding: "2rem", maxWidth: 720 }}>
-      <h1>Documents</h1>
+    <main>
+      <header className="workspace-header">
+        <h1 className="workspace-title">Documents</h1>
+      </header>
 
-      <div style={{ marginBottom: "1.5rem" }}>
-        <label htmlFor="upload">Upload a document (.pdf, .docx, .txt)</label>
-        <br />
-        <input
-          id="upload"
-          type="file"
-          accept=".pdf,.docx,.txt"
-          onChange={handleUpload}
-          disabled={isUploading}
-        />
-        {isUploading && <p>Uploading...</p>}
-        {uploadError && <p style={{ color: "crimson" }}>{uploadError}</p>}
+      <div style={{ padding: "var(--space-6)", maxWidth: 880, margin: "0 auto" }}>
+        <div className="upload-area">
+          <label className="upload-area__label" htmlFor="upload">
+            Upload a document
+          </label>
+          <input
+            id="upload"
+            type="file"
+            accept=".pdf,.docx,.txt"
+            onChange={handleUpload}
+            disabled={isUploading}
+          />
+          <p className="upload-area__hint">PDF, DOCX, or TXT</p>
+          {isUploading && <p className="upload-area__hint">Uploading…</p>}
+          {uploadError && (
+            <p className="form-error" role="alert">
+              {uploadError}
+            </p>
+          )}
+        </div>
+
+        <div style={{ marginTop: "var(--space-6)" }}>
+          {isLoadingList && documents.length === 0 && <p>Loading documents…</p>}
+          {listError && (
+            <p className="form-error" role="alert">
+              {listError}
+            </p>
+          )}
+          {!isLoadingList && !listError && documents.length === 0 && (
+            <p className="empty-state">No documents yet. Upload one to get started.</p>
+          )}
+
+          {documents.length > 0 && (
+            <ul className="doc-list" style={{ listStyle: "none", margin: 0, padding: 0 }}>
+              {documents.map((document) => (
+                <li key={document.id} className="doc-card">
+                  <div className="doc-card__info">
+                    <p className="doc-card__filename">{document.original_filename}</p>
+                    <p className="doc-card__meta">
+                      {document.content_type} · {formatFileSize(document.file_size_bytes)} ·{" "}
+                      {formatDate(document.created_at)}
+                    </p>
+                  </div>
+                  <div className="doc-card__actions">
+                    <Button variant="primary" onClick={() => navigate(chatPath(document.id))}>
+                      Open Chat
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => handleProcess(document.id)}
+                      isLoading={processingId === document.id}
+                    >
+                      {processingId === document.id ? "Processing…" : "Process"}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => handleDownload(document)}
+                      isLoading={downloadingId === document.id}
+                    >
+                      {downloadingId === document.id ? "Downloading…" : "Download"}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      className="button--danger"
+                      onClick={() => handleDelete(document.id)}
+                      isLoading={deletingId === document.id}
+                    >
+                      {deletingId === document.id ? "Deleting…" : "Delete"}
+                    </Button>
+                    {rowActionMessage[document.id] && (
+                      <p className="doc-card__status doc-card__status--success" role="status">
+                        {rowActionMessage[document.id]}
+                      </p>
+                    )}
+                    {rowActionError[document.id] && (
+                      <p className="doc-card__status doc-card__status--error" role="alert">
+                        {rowActionError[document.id]}
+                      </p>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {hasMore && (
+            <div style={{ textAlign: "center", marginTop: "var(--space-6)" }}>
+              <Button variant="secondary" onClick={handleLoadMore} isLoading={isLoadingList}>
+                {isLoadingList ? "Loading…" : "Load more"}
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
-
-      {isLoadingList && documents.length === 0 && <p>Loading documents...</p>}
-      {listError && <p style={{ color: "crimson" }}>{listError}</p>}
-      {!isLoadingList && !listError && documents.length === 0 && (
-        <p>No documents yet. Upload one to get started.</p>
-      )}
-
-      {documents.length > 0 && (
-        <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
-          <thead>
-            <tr>
-              <th style={{ borderBottom: "1px solid var(--border)", padding: "0.5rem 0" }}>
-                Filename
-              </th>
-              <th style={{ borderBottom: "1px solid var(--border)", padding: "0.5rem 0" }}>
-                Type
-              </th>
-              <th style={{ borderBottom: "1px solid var(--border)", padding: "0.5rem 0" }}>
-                Size
-              </th>
-              <th style={{ borderBottom: "1px solid var(--border)", padding: "0.5rem 0" }}>
-                Uploaded
-              </th>
-              <th style={{ borderBottom: "1px solid var(--border)", padding: "0.5rem 0" }}>
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {documents.map((document) => (
-              <tr key={document.id}>
-                <td style={{ padding: "0.5rem 0", borderBottom: "1px solid var(--border)" }}>
-                  {document.original_filename}
-                </td>
-                <td style={{ padding: "0.5rem 0", borderBottom: "1px solid var(--border)" }}>
-                  {document.content_type}
-                </td>
-                <td style={{ padding: "0.5rem 0", borderBottom: "1px solid var(--border)" }}>
-                  {formatFileSize(document.file_size_bytes)}
-                </td>
-                <td style={{ padding: "0.5rem 0", borderBottom: "1px solid var(--border)" }}>
-                  {formatDate(document.created_at)}
-                </td>
-                <td style={{ padding: "0.5rem 0", borderBottom: "1px solid var(--border)" }}>
-                  <button
-                    onClick={() => navigate(chatPath(document.id))}
-                  >
-                    Open Chat
-                  </button>{" "}
-                  <button
-                    onClick={() => handleProcess(document.id)}
-                    disabled={processingId === document.id}
-                  >
-                    {processingId === document.id ? "Processing..." : "Process"}
-                  </button>{" "}
-                  <button
-                    onClick={() => handleDownload(document)}
-                    disabled={downloadingId === document.id}
-                  >
-                    {downloadingId === document.id ? "Downloading..." : "Download"}
-                  </button>{" "}
-                  <button
-                    onClick={() => handleDelete(document.id)}
-                    disabled={deletingId === document.id}
-                  >
-                    {deletingId === document.id ? "Deleting..." : "Delete"}
-                  </button>
-                  {rowActionMessage[document.id] && (
-                    <p style={{ margin: "0.25rem 0 0", color: "green" }}>
-                      {rowActionMessage[document.id]}
-                    </p>
-                  )}
-                  {rowActionError[document.id] && (
-                    <p style={{ margin: "0.25rem 0 0", color: "crimson" }}>
-                      {rowActionError[document.id]}
-                    </p>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      {hasMore && (
-        <button onClick={handleLoadMore} disabled={isLoadingList} style={{ marginTop: "1rem" }}>
-          {isLoadingList ? "Loading..." : "Load more"}
-        </button>
-      )}
     </main>
   );
 }

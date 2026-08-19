@@ -357,6 +357,11 @@ async def chat_with_document(
       EmbeddingProviderError's existing 502 mapping above: a generic
       client-facing message only, no raw provider exception text,
       response body, or API key ever reaches the response.)
+    - EmbeddingProviderError -> 502, same treatment. rag_service.
+      answer_question() calls embedding_service.embed_query() before
+      retrieval; that failure was previously uncaught here and fell
+      through to a raw 500 — this mirrors the existing /process
+      mapping instead. Phase 1 hardening fix, not a new architecture.
     """
     document = await document_service.get_document_for_user(
         db, document_id=document_id, user_id=current_user.id
@@ -371,6 +376,11 @@ async def chat_with_document(
             db, document=document, question=request.question
         )
     except llm_service.LLMProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Answer generation failed. Please try again.",
+        ) from exc
+    except embedding_service.EmbeddingProviderError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Answer generation failed. Please try again.",
@@ -519,6 +529,11 @@ async def send_chat_message(
 
     Error mapping identical to POST /chat above: LLMProviderError
     -> 502, generic message, no raw provider text leaked.
+    EmbeddingProviderError -> 502 as well (Phase 1 hardening fix —
+    answer_question_with_history() calls embed_query() before
+    retrieval; that failure was previously uncaught here). Atomicity
+    is unaffected: the staged user message is rolled back the same
+    way it already is for a LLMProviderError failure.
     """
     document = await document_service.get_document_for_user(
         db, document_id=document_id, user_id=current_user.id
@@ -560,6 +575,11 @@ async def send_chat_message(
             db, document=document, question=request.question, history=history
         )
     except llm_service.LLMProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Answer generation failed. Please try again.",
+        ) from exc
+    except embedding_service.EmbeddingProviderError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Answer generation failed. Please try again.",
