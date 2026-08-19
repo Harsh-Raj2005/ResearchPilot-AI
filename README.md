@@ -10,6 +10,22 @@ Built incrementally, one phase and one task at a time. See
 
 ## Current status
 
+**ResearchPilot AI is deployed and live.**
+
+- **Frontend (Vercel):** https://research-pilot-ai-ashy.vercel.app/
+- **Backend (Render):** https://researchpilot-ai-jccb.onrender.com/
+
+Phase 1 — *single-document upload + chat, deployed* — has reached its
+target end state. Signup/login, document upload, explicit processing
+(text extraction → chunking → embeddings), single-document RAG, and
+persistent chat all work in production, on Neon PostgreSQL + pgvector,
+Cloudflare R2 (private bucket), and OpenAI.
+
+The milestone notes below are a running history of what each step
+added. They describe what was true when each was written, not the
+current deployment state — for that, see `docs/ARCHITECTURE.md` and
+`docs/PROJECT_CONTEXT.md`.
+
 **Phase 1: Document Management CRUD is complete.** Authenticated
 document upload, listing, detail, download, and delete all work
 end-to-end — `POST /api/v1/documents/upload`, `GET
@@ -99,22 +115,43 @@ the API. `401` reuses the existing logout-and-redirect handling;
 `docs/PROJECT_CONTEXT.md` for full current state and `CHANGELOG.md`
 for the task-by-task history.
 
-**Uploaded documents now live in Cloudflare R2, not local disk.**
+**Uploaded documents live in Cloudflare R2, not local disk.**
 Local disk on a typical free-tier hosting container isn't durable
 across redeploys or restarts, so `storage_service.py` was migrated to
-async R2 access (via `aioboto3`) ahead of an actual production
-deployment. This is an application-code change only — nothing has
-been deployed yet; see `docs/PROJECT_CONTEXT.md` for the researched
-$0/month target deployment architecture (Vercel + Render + Neon + R2).
+async R2 access (via `aioboto3`). The bucket is private — the backend
+proxies every file's bytes through its own authenticated endpoints,
+and the frontend never talks to R2 directly.
+
+**That deployment has since happened.** The frontend runs on Vercel,
+the FastAPI backend on Render, and the database is Neon PostgreSQL +
+pgvector, with Cloudflare R2 for document storage and OpenAI for
+embeddings and generation. See `docs/ARCHITECTURE.md` for the
+production architecture diagram.
+
+**Latest change — production SPA routing and visible logout.**
+`frontend/vercel.json` adds a rewrite so every client-side route
+(`/login`, `/signup`, `/documents`, `/documents/:documentId/chat`)
+serves the SPA entry point on direct navigation or refresh instead of
+a Vercel 404. The Documents and Chat workspace headers each show a
+"Log out" button that reuses the existing `AuthContext` logout and
+redirects to `/login`. Frontend-only — no backend, API, or database
+change.
 
 ## Stack
 
 - **Backend:** FastAPI, SQLAlchemy (async), Alembic, PostgreSQL + pgvector
 - **Storage:** Cloudflare R2 (S3-compatible object storage) for uploaded documents
+- **AI:** OpenAI — `text-embedding-3-small` embeddings + chat-completions generation
 - **Frontend:** React, TypeScript, Vite
+- **Production hosting:** Vercel (frontend), Render (FastAPI backend), Neon (PostgreSQL + pgvector)
 - **Local dev:** Docker Compose
 
 ## Running locally
+
+These instructions are for **local development**. Production is a
+separate environment — Vercel + Render + Neon, deployed from `main`,
+not from Docker Compose. Credentials for either environment live only
+in environment variables and are never committed.
 
 ### Option A — Docker Compose (recommended)
 

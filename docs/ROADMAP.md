@@ -2,7 +2,7 @@
 
 Full phase breakdown lives in the Phase 0 planning document. Summary:
 
-- **Phase 1** (current, in progress — target end state): single-document upload + chat, deployed.
+- **Phase 1** (current): single-document upload + chat, **deployed — target end state reached**. Live at https://research-pilot-ai-ashy.vercel.app/ (frontend, Vercel) and https://researchpilot-ai-jccb.onrender.com/ (backend, Render).
 - **Phase 2**: multiple documents, semantic search, collections.
 - **Phase 3**: notes, highlights, tags, GROBID metadata extraction.
 - **Phase 4**: multi-paper comparison (candidate point to introduce Qdrant).
@@ -100,11 +100,37 @@ Full phase breakdown lives in the Phase 0 planning document. Summary:
   - [x] Download route rewritten to build a `Response` from bytes instead of `FileResponse` (no more local filesystem streaming)
   - [x] `aioboto3` added to `pyproject.toml`; `.env.example` updated with `R2_ENDPOINT_URL`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/`R2_BUCKET_NAME` placeholders, `UPLOAD_DIR` removed
   - [x] Shared, autouse fake-R2 fixture added to `conftest.py`; full test suite migrated off local-disk assumptions (`test_storage_service.py` rewritten; 4 other test files fixed)
-  - [x] Application code only — no actual Render/Vercel/Neon deployment performed
+  - [x] Application code only — no actual Render/Vercel/Neon deployment performed *(true at the time of that milestone; the deployment has since happened — see below)*
+- [x] Pre-deployment backend fixes — **verified present in the current source**
+  - [x] `EmbeddingProviderError` → `502` on the persisted send-message route (commit `8c7a542`, "fix: map embedding failures to 502") — closes the gap previously listed under NEXT
+  - [x] `backend/Dockerfile`'s `CMD` binds `${PORT:-8000}` in shell form instead of a hard-coded `--port 8000`, so Render's injected `$PORT` is honored while local `docker run`/Compose still gets 8000
+- [x] Production deployment — **live**
+  - [x] Frontend on Vercel — https://research-pilot-ai-ashy.vercel.app/
+  - [x] FastAPI backend on Render — https://researchpilot-ai-jccb.onrender.com/
+  - [x] Database on Neon (PostgreSQL + pgvector)
+  - [x] Document storage on Cloudflare R2 (private bucket, backend-proxied)
+  - [x] OpenAI for embeddings and LLM generation
+- [x] Production SPA Routing + Logout UI (branch `fix/vercel-routing-and-logout`, commit `511ae84`, merged into `main`)
+  - [x] `frontend/vercel.json` — single SPA rewrite so `/login`, `/signup`, `/documents`, and `/documents/:documentId/chat` load on direct navigation or refresh instead of a Vercel 404
+  - [x] Visible "Log out" action in the Documents workspace header
+  - [x] Visible "Log out" action in the Chat workspace header, preserving the existing "← Documents" navigation and document title
+  - [x] Reuses the existing `AuthContext` logout and `ROUTES.login` navigation — no new authentication mechanism, no backend/API/database change
+  - [x] Frontend build and lint pass; production routes and document-grounded chat manually verified after deployment
 
 NEXT (not yet approved/designed):
-- Actual Render + Vercel + Neon deployment (provisioning, migrations, env vars, CORS, `$PORT` Dockerfile fix, production smoke test)
-- Fix: `EmbeddingProviderError` not mapped to 502 on the persisted send-message route (found during Frontend Chat UI's manual E2E, not fixed — out of that milestone's scope)
 - Conversation summarization for long sessions
 - Vector index (HNSW/IVFFlat) — once multi-document/large-scale retrieval genuinely needs one
-- Multi-document search (Phase 2)
+- Citations/sources in chat answers
+- Phase 2 — multi-document/global semantic search, collections. **Not started.**
+
+*(Two items previously listed here have moved into the completed log
+above: the actual Render + Vercel + Neon deployment, and the
+`EmbeddingProviderError` → `502` mapping on the persisted send-message
+route.)*
+
+Still deferred, unchanged — these are **not** complete and must not be
+marked so merely because they were planned: multi-document/global
+semantic search and collections (Phase 2), multi-paper comparison
+(Phase 4), literature review generation (Phase 5), research gap
+detection (Phase 6), knowledge graph (Phase 7), and everything else in
+the phase list at the top of this document.
