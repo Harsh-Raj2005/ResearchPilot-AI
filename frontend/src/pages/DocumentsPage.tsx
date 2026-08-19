@@ -210,6 +210,16 @@ export default function DocumentsPage() {
     <main>
       <header className="workspace-header">
         <h1 className="workspace-title">Documents</h1>
+        <Button
+          variant="secondary"
+          style={{ marginLeft: "auto" }}
+          onClick={() => {
+            logout();
+            navigate(ROUTES.login);
+          }}
+        >
+          Log out
+        </Button>
       </header>
 
       <div style={{ padding: "var(--space-6)", maxWidth: 880, margin: "0 auto" }}>
