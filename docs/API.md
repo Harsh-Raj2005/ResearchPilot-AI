@@ -2,6 +2,14 @@
 
 Base URL: `/api/v1`
 
+- **Production:** `https://researchpilot-ai-jccb.onrender.com/api/v1/...`
+- **Local dev:** `http://localhost:8000/api/v1/...`
+
+**There is no logout endpoint.** Logging out is entirely client-side —
+the frontend's `AuthContext.logout()` clears the stored access token.
+The backend issues stateless JWTs and holds no server-side session to
+invalidate.
+
 ## Health
 
 ### `GET /health`
@@ -136,7 +144,7 @@ Return the actual stored file for a document owned by the current user.
 **Response `200`** — the raw file bytes.
 - `Content-Type` — the document's stored `content_type`
 - `Content-Disposition: attachment; filename="<original_filename>"` — always the user's original filename, never the internal UUID-based stored filename
-- `Accept-Ranges: bytes` — range requests work automatically (Starlette's built-in `FileResponse` behavior, not custom code)
+- The body is built from raw bytes fetched from Cloudflare R2 and returned via a plain Starlette `Response` — not `FileResponse`, which requires a real local filesystem path. Range requests are therefore not supported; the whole file is returned in one response.
 
 **Response `401`** — missing or invalid token
 **Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical to the detail endpoint's 404 behavior — indistinguishable from a nonexistent ID.
@@ -184,7 +192,7 @@ Calling this endpoint again for an already-processed document **reprocesses** it
 **Response `500`** — the document row exists and is owned by the caller, but its stored object is missing from storage (a server-side data-integrity problem, not a client error — identical in spirit to download's `500` for the same condition).
 **Response `502`** — the embedding provider failed (network error, timeout, API error, or an unexpected/malformed response). The response body is a generic message only — no raw provider error text, response body, or API key ever reaches the client.
 
-_Document parsing is now available on demand via this endpoint. Chunking, embeddings, RAG, and chat are not implemented — see the Phase 1 Technical Design Document and `docs/PROJECT_CONTEXT.md` for the full planned surface._
+_Chunking, embeddings, retrieval, RAG, and chat are all implemented on top of this endpoint — see the Chat sections below. A document must be processed through this endpoint before chat can find any relevant content in it; an unprocessed document has no chunks, so chat returns the deterministic "no relevant content" fallback._
 
 ---
 
@@ -214,9 +222,9 @@ If the document has no relevant chunks (e.g. it has not been processed yet, or i
 **Response `401`** — missing or invalid token
 **Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user. Identical behavior to every other `{document_id}` route — indistinguishable from a nonexistent ID.
 **Response `422`** — `document_id` is not a valid UUID, *or* the request body is missing `question`, *or* `question` is empty or whitespace-only.
-**Response `502`** — the LLM provider failed (network error, timeout, API error, or an unexpected/malformed response). The response body is a generic message only — no raw provider error text, response body, or API key ever reaches the client.
+**Response `502`** — the LLM provider failed, *or* the query-embedding step failed (network error, timeout, API error, or an unexpected/malformed response). Both `LLMProviderError` and `EmbeddingProviderError` map to `502` here. The response body is a generic message only — no raw provider error text, response body, or API key ever reaches the client.
 
-_This is a stateless single-question endpoint — there is no conversation history, session, or memory. Chat persistence and a frontend chat UI are separate, not-yet-implemented future milestones._
+_This is a stateless single-question endpoint — there is no conversation history, session, or memory. Persistent, multi-turn conversations are a separate surface, documented under "Chat Persistence" below; both exist side by side, and the frontend chat UI uses the persistent one._
 
 ---
 
@@ -283,6 +291,6 @@ The user's message and the assistant's reply are persisted atomically: if the LL
 **Response `401`** — missing or invalid token
 **Response `404`** — no document with this ID exists, *or* it exists but belongs to a different user, *or* no session with this ID exists under this document
 **Response `422`** — `document_id`/`session_id` is not a valid UUID, *or* `question` is missing, empty, or whitespace-only
-**Response `502`** — the LLM provider failed. Generic message only — no raw provider error text, response body, or API key ever reaches the client.
+**Response `502`** — the LLM provider failed, *or* the query-embedding step failed. Both `LLMProviderError` and `EmbeddingProviderError` map to `502` on this route. Generic message only — no raw provider error text, response body, or API key ever reaches the client. Atomicity is unaffected either way: the staged user message is rolled back, so no partial conversation is committed.
 
-_These endpoints are the persistence layer on top of the same RAG pipeline `POST /documents/{document_id}/chat` already uses — that stateless endpoint is unchanged and remains available alongside sessions. A frontend chat UI is a separate, not-yet-implemented future milestone._
+_These endpoints are the persistence layer on top of the same RAG pipeline `POST /documents/{document_id}/chat` already uses — that stateless endpoint is unchanged and remains available alongside sessions. The frontend chat UI (`/documents/:documentId/chat`) consumes these four endpoints._

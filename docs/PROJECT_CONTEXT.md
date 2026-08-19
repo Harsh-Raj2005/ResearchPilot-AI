@@ -32,7 +32,54 @@ Other features mentioned in the original brainstorm but not yet scheduled into a
 
 **Resume impact (explicit motivation, stated in the original planning notebook):** The project is deliberately built and deployed incrementally so that the GitHub history itself demonstrates engineering discipline — each phase is a "resume line" that gets stronger over time. The stated skill set this is meant to demonstrate to recruiters: Backend, Frontend, AI/RAG, LLMs, Embeddings, Vector DB, Postgres, Docker, Auth, Cloud deployment, REST APIs, CI/CD, System Design.
 
-**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, and the Single-Document Chat API are all fully complete. **This milestone (Chat Persistence) adds real, persisted, multi-turn conversations** — new `ChatSession`/`ChatMessage` models and four new endpoints (create session, list sessions, list messages, send message) under `/documents/{document_id}/chat/sessions...`. `llm_service.generate_answer()` now accepts a full message list (native multi-turn) rather than a single prompt string; a new `rag_service.answer_question_with_history()` sits alongside the unchanged, still-stateless `answer_question()`. The send-message endpoint persists the user's message and the assistant's reply atomically — one commit only after the LLM call succeeds, so a failed generation never leaves a partial conversation. No frontend change yet. Nothing has been deployed yet.
+**Current development phase:** **Phase 1 ("Single-document upload + chat, deployed")**, in progress. Task 3B (upload-only Document Management), Document Management CRUD, Document Text Extraction (Checkpoints 1–5), Task 3C (frontend document management), Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, and the Single-Document Chat API are all fully complete. **This milestone (Chat Persistence) adds real, persisted, multi-turn conversations** — new `ChatSession`/`ChatMessage` models and four new endpoints (create session, list sessions, list messages, send message) under `/documents/{document_id}/chat/sessions...`. `llm_service.generate_answer()` now accepts a full message list (native multi-turn) rather than a single prompt string; a new `rag_service.answer_question_with_history()` sits alongside the unchanged, still-stateless `answer_question()`. The send-message endpoint persists the user's message and the assistant's reply atomically — one commit only after the LLM call succeeds, so a failed generation never leaves a partial conversation. That milestone itself added no frontend change, and nothing was deployed at the time it was written.
+
+### CURRENT STATE — 2026-08-19
+
+*Authoritative. The paragraph above is the Chat Persistence milestone's
+own snapshot and is kept as history; this block describes the project
+as it actually is now.*
+
+**Phase 1 — single-document upload + chat — is deployed and live.**
+
+| Layer | Provider | URL |
+|---|---|---|
+| Frontend | Vercel (React + TypeScript + Vite) | https://research-pilot-ai-ashy.vercel.app/ |
+| Backend | Render (FastAPI) | https://researchpilot-ai-jccb.onrender.com/ |
+| Database | Neon (PostgreSQL + pgvector) | — |
+| Object storage | Cloudflare R2 (private bucket) | — |
+| AI provider | OpenAI (embeddings + LLM generation) | — |
+
+Also true as of this date:
+
+- **Persistent chat is implemented** — `ChatSession`/`ChatMessage`, the
+  four session/message endpoints, and history-aware RAG, all live.
+- **The frontend `ChatPage` is implemented** —
+  `frontend/src/pages/ChatPage.tsx`, protected route
+  `/documents/:documentId/chat`.
+- **The frontend `DocumentsPage` is implemented** —
+  `frontend/src/pages/DocumentsPage.tsx`, protected route
+  `/documents`.
+- **A Vercel SPA routing fallback exists** — `frontend/vercel.json`
+  rewrites `/(.*)` to `/index.html`, so client-side routes load on
+  direct navigation or refresh. It is a static-hosting rule, not a
+  backend route.
+- **Visible logout actions exist** on both the Documents and Chat
+  workspace headers, reusing the existing `AuthContext.logout()` and
+  navigating to `ROUTES.login`. There is no logout endpoint and no new
+  authentication mechanism.
+- **The latest frontend fix was merged into `main`** — branch
+  `fix/vercel-routing-and-logout`, commit `511ae84` ("fix: add SPA
+  routing fallback and logout UI"), merged via pull request with
+  required checks passing; Vercel reported the deployment Ready.
+- **A production smoke verification was performed after that merge** —
+  `/login`, `/signup`, and `/documents` load directly; both workspace
+  headers show the Log out button; logging out returns to `/login`;
+  direct document-chat routes load. A test PDF was uploaded and
+  processed, and document-grounded chat answered from it. A bare
+  greeting returned the existing deterministic "no relevant content"
+  response (`rag_service.NO_CONTEXT_ANSWER`) — the designed behavior of
+  document-grounded retrieval, not a defect.
 
 ---
 
@@ -112,7 +159,7 @@ Log out and back in ──► document and chat history still there
 - Chat session + chat message models and endpoints.
 - RAG service (retrieval + prompt assembly + LLM call).
 - Frontend: document detail page, PDF viewer/annotation, chat panel, research workspace of any kind — deliberately not part of Task 3C's scope (a dedicated detail page was evaluated and rejected: `DocumentResponse`'s four fields already fit in a list row).
-- Deployment (Vercel for frontend, Render for backend, Neon for Postgres+pgvector, Cloudflare R2 for document storage — see Section 3's Storage subsection and the Deployment Design Report for the full $0-cost architecture rationale) — **nothing is deployed yet**.
+- ~~Deployment (Vercel for frontend, Render for backend, Neon for Postgres+pgvector, Cloudflare R2 for document storage)~~ — **done and live.** See the CURRENT STATE block in Section 1 and Section 3's Deployment subsection. *(This list is otherwise the Chat Persistence-era snapshot; several entries below it were also completed in later milestones — the CURRENT STATE block is authoritative.)*
 - Sentry error tracking.
 - Google OAuth login (deferred to Phase 2/12 by design).
 - Refresh-token flow / `POST /auth/refresh`.
@@ -175,10 +222,12 @@ Unchanged this milestone.
 
 Two distinct read paths, not one: `get_file_bytes()` (raw bytes, used by the download endpoint's `Response`) and `get_file_path()` (downloads to a temporary local file, used by `document_text_service.py` since `parse_service.extract_text()` still needs a real `Path` for PyMuPDF — that function was deliberately not touched by this milestone). The R2 bucket remains private; no public URLs, no presigned-URL redirects — the backend proxies all file bytes through its own authenticated endpoints, preserving the exact ownership-isolation guarantees already established for local disk.
 
-### Deployment (planned, nothing live yet)
-**Target architecture researched and approved this milestone, for a hard $0/month mandatory hosting cost:** Vercel (frontend) + Render free web service (backend) + Neon free PostgreSQL with pgvector (database) + Cloudflare R2 (this milestone's file storage). Railway was explicitly ruled out (no longer offers a permanent free tier — a one-time 30-day/$5 trial, then mandatory paid usage). Render's own free Postgres was also ruled out (expires 30 days after creation). OpenAI usage remains separate, pay-as-you-go, already configured and verified locally with a real key. A real `OPENAI_API_KEY` must be set in any environment that calls `/process` — there is no default, and the app will fail at the embedding step (translated to a `502`) without one configured. **Nothing is actually deployed yet** — this milestone prepared the repository (R2 storage) for that future deployment; the Render/Vercel/Neon provisioning itself is a separate, not-yet-started milestone.
+### Deployment — live
+**Production, as of 2026-08-19:** Browser → **Vercel** (React + TypeScript + Vite frontend) → **Render** (FastAPI backend, `app.main:app`) → **Neon** (PostgreSQL + pgvector). Render also talks to **Cloudflare R2** (private document storage) and **OpenAI** (embeddings + LLM generation). Frontend: https://research-pilot-ai-ashy.vercel.app/ — backend: https://researchpilot-ai-jccb.onrender.com/. The R2 bucket stays private: the frontend never talks to R2, and the backend remains responsible for all authenticated document access, proxying file bytes through its own ownership-checked endpoints. `frontend/vercel.json` supplies the SPA rewrite that lets client-side routes load on direct navigation or refresh — a Vercel static-hosting rule, not a backend route. See `docs/ARCHITECTURE.md` for the diagram.
 
-**One known, small, unaddressed deployment blocker:** `backend/Dockerfile`'s `CMD` hard-codes `--port 8000` rather than reading the `$PORT` environment variable Render (and Railway) inject at runtime — a genuine, tiny configuration fix needed before the backend can actually deploy, deliberately left for the dedicated deployment milestone rather than made here, since it's unrelated to storage.
+**Historical — how this architecture was chosen (kept for rationale):** researched and approved during the R2 storage milestone, for a hard $0/month mandatory hosting cost. Railway was explicitly ruled out (no longer offers a permanent free tier — a one-time 30-day/$5 trial, then mandatory paid usage). Render's own free Postgres was also ruled out (expires 30 days after creation). OpenAI usage remains separate, pay-as-you-go. A real `OPENAI_API_KEY` must be set in any environment that calls `/process` — there is no default, and the app will fail at the embedding step (translated to a `502`) without one configured.
+
+**The deployment blocker previously recorded here is RESOLVED.** `backend/Dockerfile`'s `CMD` no longer hard-codes `--port 8000` — it binds `${PORT:-8000}` in shell form, so Render's injected `$PORT` is honored at runtime while local `docker run`/Compose still falls back to 8000. Verified in the current source.
 
 ### Future microservices
 Unchanged this milestone — see prior sections.
@@ -482,6 +531,12 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 `docs/API.md` updated this milestone — new "Chat Persistence" section documenting all four endpoints, request/response shapes, and full error mapping (`401`/`404`/`422`/`502`).
 
+**No API change since (verified 2026-08-19).** The fourteen routes in the table above are still the complete surface. Neither the production deployment nor the SPA-routing/logout fix added an endpoint or altered any request/response shape. In particular:
+
+- **There is no logout endpoint.** Logout is entirely client-side — `AuthContext.logout()` clears the stored access token. The backend issues stateless JWTs and holds no server-side session to invalidate.
+- **`frontend/vercel.json` is not an API route.** It is a Vercel static-hosting rewrite that serves `index.html` for client-side paths; the backend knows nothing about it.
+- One behavioral correction was made earlier, on an existing route, not by the routing/logout milestone: `POST /documents/{document_id}/chat/sessions/{session_id}/messages` now maps `EmbeddingProviderError` to `502` as well as `LLMProviderError` (commit `8c7a542`) — the status code `docs/API.md` already documented.
+
 ---
 
 ## 10. CODING CONVENTIONS
@@ -572,7 +627,9 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - **Frontend Chat UI — `ChatPage.tsx`, protected route `/documents/:documentId/chat`; consumes the four Chat Persistence endpoints (create/list sessions, send/list messages) via a new `services/chat.ts`; session sidebar + conversation view + composer; "Open Chat" link added to `DocumentsPage.tsx`. No backend changes. Complete.**
 - **Persistent Cloud Document Storage (Cloudflare R2) — `storage_service.py` migrated from local disk to R2 (async, via `aioboto3`); `document_service.py`, the download route, `pyproject.toml`, and `.env.example` updated to match; full test suite (`conftest.py`'s shared fake-R2 fixture + a rewritten `test_storage_service.py`) migrated off local-disk assumptions. Complete — application code only; actual Render/Vercel/Neon deployment is a separate, not-yet-started milestone.**
 
-**Git state:** everything through this milestone was implemented on top of the real, committed `0bf7de2` (`feat: add RAG foundation`, branch `main`), on top of the still-uncommitted Chat Persistence and Frontend Chat UI changes already in this working tree. This milestone's changes remain uncommitted, per its own instructions.
+**Git state (historical — R2 milestone):** everything through that milestone was implemented on top of the real, committed `0bf7de2` (`feat: add RAG foundation`, branch `main`), on top of the still-uncommitted Chat Persistence and Frontend Chat UI changes already in that working tree.
+
+**Git state (2026-08-19):** all of that work is now committed. The Phase 1 UI hardening work was merged into `main` (`a3d6757`), and the latest frontend fix — branch `fix/vercel-routing-and-logout`, commit `511ae84` ("fix: add SPA routing fallback and logout UI") — was merged into `main` via pull request.
 
 **Not started at all:**
 - Automatic parsing on upload — deliberately not built; a confirmed design decision, not an oversight.
@@ -584,12 +641,14 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 - Document detail page, PDF viewer/annotation, any research-workspace UI.
 - Session titles, message editing/deletion, conversation summarization, streaming responses — all deliberately deferred.
 - Citations/sources schema — deliberately deferred, separate future milestone.
-- Actual Render/Vercel/Neon provisioning and deployment — this milestone only prepared the application code (R2 storage); nothing is deployed yet.
+- ~~Actual Render/Vercel/Neon provisioning and deployment~~ — **done and live** (see the CURRENT STATE block in Section 1).
 - Sentry integration.
 
-**Two real, pre-existing gaps found (not fixed) during prior/this milestone's verification:**
-1. (Chat Persistence / Frontend Chat UI) The persisted send-message route catches `LLMProviderError` but not `EmbeddingProviderError` — a query-embedding failure surfaces as a raw `500` instead of the documented `502`. Still unfixed, still out of scope for this milestone.
-2. (This milestone) `backend/Dockerfile`'s `CMD` hard-codes `--port 8000` instead of reading `$PORT` — will block an actual Render/Railway deploy until fixed. Deliberately left for the dedicated deployment milestone, since it's unrelated to the R2 storage work this milestone scoped.
+**Two real, pre-existing gaps were found (and left unfixed) during the R2 milestone's verification. Both have since been RESOLVED — re-verified against the current source on 2026-08-19:**
+1. **RESOLVED.** The persisted send-message route caught `LLMProviderError` but not `EmbeddingProviderError`, so a query-embedding failure surfaced as a raw `500` instead of the documented `502`. `app/api/documents.py`'s `send_chat_message()` now catches `embedding_service.EmbeddingProviderError` and maps it to `502` alongside `LLMProviderError` (commit `8c7a542`, "fix: map embedding failures to 502"). Atomicity is unaffected — the staged user message is rolled back the same way it already was for an `LLMProviderError`.
+2. **RESOLVED.** `backend/Dockerfile`'s `CMD` now binds `${PORT:-8000}` in shell form rather than a hard-coded `--port 8000`, so Render's injected `$PORT` is honored.
+
+Neither fix was made by the routing/logout milestone — both predate it. See Section 15 for the issues that remain genuinely open.
 
 **Partially completed work:** None. Persistent Cloud Document Storage is complete and fully verified for its approved scope — application code only, no deployment performed.
 
@@ -597,7 +656,11 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 
 ## 13. NEXT TASK
 
-**Persistent Cloud Document Storage (R2) is now complete.** The application no longer depends on local disk for uploaded documents, which was the single largest blocker to a real production deployment. The natural next milestone is the actual Render + Vercel + Neon deployment pass (provisioning the three services, applying migrations to Neon, configuring environment variables/CORS, fixing the Dockerfile's `$PORT` binding, and a full production smoke test) — this section intentionally does not begin that work here, since it requires real account access this environment doesn't have.
+**Historical (R2 milestone) — what "next" meant at that time:** Persistent Cloud Document Storage (R2) is now complete. The application no longer depends on local disk for uploaded documents, which was the single largest blocker to a real production deployment. The natural next milestone is the actual Render + Vercel + Neon deployment pass (provisioning the three services, applying migrations to Neon, configuring environment variables/CORS, fixing the Dockerfile's `$PORT` binding, and a full production smoke test).
+
+**Current (2026-08-19):** that deployment pass has been carried out — Vercel + Render + Neon are live, and both blockers it named (the Dockerfile's `$PORT` binding and the missing `EmbeddingProviderError` → `502` mapping) are fixed in the current source. The most recent milestone on top of it was the production SPA-routing and logout fix (`frontend/vercel.json` plus visible logout actions on the Documents and Chat pages), merged into `main` as `511ae84`.
+
+Phase 1's target end state — single-document upload + chat, deployed — is therefore reached. **The next major product phase is Phase 2** (multiple documents, semantic search across papers, collections). Phase 2 has not been started, designed, or approved, and nothing in this document begins it.
 
 **Confirmed decisions from Checkpoints 2–5, Task 3C, Document Chunking, Document Chunks → Embeddings, Vector Retrieval, RAG Foundation, Single-Document Chat API, Chat Persistence, Frontend Chat UI, and Persistent Cloud Document Storage (do not re-litigate without a new reason):**
 - **Storage is Cloudflare R2, not local disk, not a Render/Railway persistent volume** — chosen because it requires no per-provider volume configuration and keeps storage fully decoupled from whichever compute provider hosts the backend; see the Deployment Design Report for the full options comparison.
@@ -652,7 +715,9 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
   - **Single-Document Chat API ✅ done** — `POST /api/v1/documents/{document_id}/chat`, thin and stateless, exposing `rag_service.answer_question()` over HTTP; no chat persistence, no frontend change.
   - **Chat Persistence ✅ done** — `ChatSession`/`ChatMessage` models, four new session/message endpoints, history-aware RAG, atomic message writes; no frontend change.
   - **Frontend Chat UI ✅ done** — protected `/documents/:documentId/chat` route; session sidebar, conversation view, composer; consumes the four Chat Persistence endpoints; no backend changes.
-  - Deployment (Railway + Vercel) — not started.
+  - **Persistent Cloud Document Storage (Cloudflare R2) ✅ done** — private bucket, all access proxied through the authenticated backend.
+  - **Production deployment ✅ done and live** — Vercel (frontend) + Render (FastAPI backend) + Neon (PostgreSQL + pgvector) + Cloudflare R2 + OpenAI. *(This line previously read "Deployment (Railway + Vercel) — not started"; Railway was ruled out during the R2 milestone's deployment research, and the deployment has since happened on Render.)*
+  - **Production SPA routing + visible logout ✅ done** — `frontend/vercel.json` SPA rewrite; "Log out" actions in the Documents and Chat workspace headers (commit `511ae84`).
 - **Phase 2:** Multiple documents, semantic search across all papers, collections.
 - **Phase 3:** Notes, highlights, tags; GROBID metadata extraction.
 - **Phase 4:** Multi-paper comparison. Candidate point to introduce Qdrant.
@@ -680,6 +745,16 @@ Backend unchanged from the prior sync — see prior sections. **This checkpoint 
 22. **A real bug caught during mandatory migration hand-review, not applied blindly:** Alembic's `--autogenerate` produced a migration referencing `pgvector.sqlalchemy.vector.VECTOR` without adding the corresponding `import pgvector.sqlalchemy` line — would have raised `NameError` the first time the migration actually ran. Caught and fixed before applying, per this project's own standing migration-review discipline (§19 of this document).
 
 23. **A real gap discovered in the test suite's `client` fixture, not a production bug:** `tests/conftest.py`'s `_override_get_db()` does `yield db_session` with no `async with`/`finally`, unlike production's real `get_db()` (`async with AsyncSessionLocal() as session: yield session`). This means an exception during an HTTP-level test does *not* automatically roll back the shared test session the way `AsyncSession.close()` does in production — a flushed-but-uncommitted row stays visible to same-session queries after the request "fails." Any future HTTP-level test that exercises a genuine mid-transaction failure needs an explicit `await db_session.rollback()` before asserting on database state, mirroring what production does implicitly. Worth fixing the fixture itself in a future housekeeping pass, but out of scope for this milestone to touch test infrastructure unrelated to embeddings.
+
+24. **RESOLVED (re-verified against the current source, 2026-08-19).** "Nothing deployed" — item 9 in the historical list summarized at the top of this section — no longer describes reality. ResearchPilot AI is live: Vercel (frontend) + Render (FastAPI backend) + Neon (PostgreSQL + pgvector) + Cloudflare R2 (private document storage) + OpenAI. See the CURRENT STATE block in Section 1.
+
+25. **RESOLVED (re-verified against the current source, 2026-08-19).** Two items previously tracked as open are fixed: the persisted send-message route's missing `EmbeddingProviderError` → `502` mapping (now caught alongside `LLMProviderError` in `app/api/documents.py`'s `send_chat_message()`, commit `8c7a542`), and `backend/Dockerfile`'s hard-coded `--port 8000` (now `${PORT:-8000}`). Details in Section 12.
+
+26. **Still OPEN — carried forward, not re-verified during this sync and explicitly not claimed fixed:** the CI/pgvector image mismatch and "migrations not exercised by the test suite" (both flagged IMPORTANT in the historical list summarized above), and `tests/conftest.py`'s `_override_get_db()` rollback gap (item 23). None were touched by the deployment work or by the routing/logout milestone.
+
+27. **Not a defect — designed behavior.** An off-document message (for example a bare "Hi") returns the deterministic `rag_service.NO_CONTEXT_ANSWER` fallback without calling the LLM, because retrieval found no relevant chunks. This was observed during the 2026-08-19 production smoke check and is the documented behavior of document-grounded retrieval, not a bug. Do not file it as one unless the implementation itself is shown to be wrong.
+
+**How to read this section:** items marked **RESOLVED** were verified against the current source on the date given. Items marked **OPEN** are real and unfixed. Items in Section 2's "explicitly postponed by design" table, and the deferred phases in Section 14, are **DEFERRED BY DESIGN** — not defects, and not to be re-opened as bugs.
 
 ---
 

@@ -1512,3 +1512,44 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   ownership-isolation guarantees already established for local disk.
   R2 credentials are backend-only environment variables — never
   exposed to the frontend, Vercel, or committed to Git.
+
+### 2026-08-19 — Production routing and logout fix
+- Added `frontend/vercel.json` with a single SPA routing fallback
+  (`"source": "/(.*)"` → `"destination": "/index.html"`), so Vercel
+  serves the React entry point for client-side routes instead of
+  returning a 404. This fixes direct navigation and refresh for
+  `/login`, `/signup`, `/documents`, and
+  `/documents/:documentId/chat`. No other Vercel configuration — no
+  builds, routes, redirects, headers, or functions.
+- Added a visible "Log out" action to the Documents workspace header
+  (`frontend/src/pages/DocumentsPage.tsx`).
+- Added the same visible "Log out" action to the Chat workspace header
+  (`frontend/src/pages/ChatPage.tsx`), preserving the existing
+  "← Documents" navigation and the document-title heading.
+- Both reuse the existing authentication and routing logic — `useAuth()`'s
+  `logout()`, the existing `useNavigate()`, `ROUTES.login`, and the
+  shared `Button` component. No new logout function was created, and
+  `AuthContext.tsx`, `ProtectedRoute.tsx`, `App.tsx`, `routes.ts`, and
+  the stylesheet were all left untouched.
+- **Exactly three files changed:** `frontend/vercel.json`,
+  `frontend/src/pages/DocumentsPage.tsx`, and
+  `frontend/src/pages/ChatPage.tsx`. No backend change, no API-contract
+  change, no database or migration change, no new dependency.
+- Verified locally before pushing: `npm run build` (TypeScript
+  compilation + Vite production build) passed; `npm run lint` passed
+  with 0 warnings and 0 errors; `git diff --check` passed; the working
+  tree was clean.
+- Branch `fix/vercel-routing-and-logout`, commit `511ae84` ("fix: add
+  SPA routing fallback and logout UI"), pushed and merged into `main`
+  via pull request, with all required GitHub checks passing. Vercel
+  reported the deployment as Ready.
+- Manually verified in production after the merge: `/login`,
+  `/signup`, and `/documents` all load on direct navigation; the
+  Documents and Chat pages both show the Log out button; logging out
+  returns to `/login`; direct document-chat routes load. A test PDF
+  was uploaded and processed, and document-grounded chat answered from
+  it — including stating that the document says the capital of Japan
+  is Tokyo, and producing a document-grounded summary when asked what
+  the document was about. A bare greeting returned the existing
+  deterministic "no relevant content" response, which is the designed
+  behavior of document-grounded retrieval, not a regression.

@@ -4,37 +4,61 @@ See the Phase 0 planning document for full rationale on every
 technology choice (why FastAPI, why pgvector over Qdrant for now,
 why no LangChain, etc.).
 
-## Deployment target architecture
+## Production deployment architecture (current — live)
 
-Not yet deployed — this describes the researched, approved target,
-prepared for by the R2 storage migration and this deployment-readiness
-pass. Actual provisioning (creating the Render/Vercel/Neon/Cloudflare
-accounts, setting environment variables, running the production
-migration) is a separate, not-yet-performed step.
+ResearchPilot AI is deployed and running in production:
+
+- **Frontend:** https://research-pilot-ai-ashy.vercel.app/
+- **Backend:** https://researchpilot-ai-jccb.onrender.com/
 
 ```
 Browser
   │
   ▼
-Vercel (React/Vite, static build)          FREE
+Vercel (React + TypeScript + Vite, static build)
   │ HTTPS
   ▼
-Render (FastAPI, app.main:app)             FREE — sleeps after 15 min idle
+Render (FastAPI, app.main:app)
   │
-  ├──► Neon (PostgreSQL + pgvector)        FREE — scales to zero after 5 min idle
+  ├──► Neon (PostgreSQL + pgvector)
   │
-  ├──► Cloudflare R2 (uploaded PDFs)       FREE — 10GB, no time limit
+  ├──► Cloudflare R2 (uploaded documents, private bucket)
   │
-  └──► OpenAI API (embeddings + LLM)       pay-as-you-go, separate from hosting
+  └──► OpenAI (embeddings + LLM generation)
 ```
+
+- **Vercel** is the production frontend — the static React + TypeScript
+  + Vite build.
+- **Render** hosts the FastAPI backend (`app.main:app`).
+- **Neon** provides PostgreSQL + pgvector.
+- **Cloudflare R2** provides private document storage.
+- **OpenAI** provides embeddings and LLM generation.
+- **The R2 bucket remains private.** There are no public object URLs
+  and no presigned-URL redirects; the frontend never talks to R2
+  directly.
+- **The backend remains responsible for authenticated document
+  access** — every file's bytes are proxied through its own
+  ownership-checked endpoints, exactly as they were when storage was
+  local disk.
+
+`frontend/vercel.json` supplies a single SPA rewrite so client-side
+routes (`/login`, `/signup`, `/documents`,
+`/documents/:documentId/chat`) load on direct navigation or refresh.
+That is a Vercel static-hosting rule, not a backend route — it adds no
+API surface.
+
+## Historical — why this architecture was chosen (pre-deployment research)
+
+*Kept for rationale. This described a target at the time; it is now the
+architecture actually running above.*
 
 Chosen specifically to guarantee a genuine $0/month mandatory hosting
 cost — Railway and Render's own free Postgres were both researched
 and explicitly ruled out (Railway no longer has a permanent free
-tier; Render's free Postgres expires 30 days after creation). All
-free-tier limits and pricing should be re-verified against each
-provider's current documentation at actual deploy time, since free
-tiers change.
+tier; Render's free Postgres expires 30 days after creation).
+Free-tier limits and pricing should be re-verified against each
+provider's current documentation over time, since free tiers change.
+OpenAI usage is separate from hosting and remains pay-as-you-go.
 
 ## Historical (Task 1) architecture
 
