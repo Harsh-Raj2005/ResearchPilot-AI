@@ -23,6 +23,7 @@ import * as chatService from "../services/chat";
 import * as documentService from "../services/document";
 import type { ChatMessageResponse, ChatSessionResponse } from "../types/chat";
 import type { DocumentResponse } from "../types/document";
+import Button from "../components/Button";
 
 function formatTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
@@ -224,134 +225,115 @@ export default function ChatPage() {
   }
 
   return (
-    <main style={{ display: "flex", flexDirection: "column", height: "100svh", fontFamily: "var(--sans)" }}>
-      <header
-        style={{
-          padding: "0.75rem 1.5rem",
-          borderBottom: "1px solid var(--border)",
-          display: "flex",
-          alignItems: "center",
-          gap: "1rem",
-        }}
-      >
-        <button onClick={() => navigate(ROUTES.documents)} style={{ flexShrink: 0 }}>
-          &larr; Documents
+    <main className="chat-page">
+      <header className="workspace-header">
+        <button className="button button--secondary" onClick={() => navigate(ROUTES.documents)}>
+          ← Documents
         </button>
-        <h2 style={{ margin: 0, fontSize: "1.1rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {documentError ? documentError : document ? document.original_filename : "Loading..."}
+        <h2 className="workspace-title">
+          {documentError ? documentError : document ? document.original_filename : "Loading…"}
         </h2>
       </header>
 
-      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* Session list sidebar */}
-        <aside
-          style={{
-            width: "260px",
-            flexShrink: 0,
-            borderRight: "1px solid var(--border)",
-            padding: "1rem",
-            overflowY: "auto",
-          }}
-        >
-          <button onClick={handleNewChat} disabled={isCreatingSession} style={{ width: "100%", marginBottom: "1rem" }}>
-            {isCreatingSession ? "Creating..." : "+ New Chat"}
-          </button>
+      <div className="chat-layout">
+        <aside className="chat-sidebar" aria-label="Chat sessions">
+          <Button
+            variant="primary"
+            fullWidth
+            onClick={handleNewChat}
+            isLoading={isCreatingSession}
+          >
+            {isCreatingSession ? "Creating…" : "+ New Chat"}
+          </Button>
 
-          {isLoadingSessions && <p>Loading conversations...</p>}
-          {sessionsError && <p style={{ color: "crimson" }}>{sessionsError}</p>}
+          {isLoadingSessions && <p className="workspace-subtitle">Loading conversations…</p>}
+          {sessionsError && (
+            <p className="form-error" role="alert">
+              {sessionsError}
+            </p>
+          )}
           {!isLoadingSessions && !sessionsError && sessions.length === 0 && (
-            <p>No conversations yet.</p>
+            <p className="workspace-subtitle">No conversations yet.</p>
           )}
 
           {sessions.map((session) => (
-            <div
+            <button
               key={session.id}
+              type="button"
+              className={
+                session.id === selectedSessionId
+                  ? "session-item session-item--active"
+                  : "session-item"
+              }
+              aria-current={session.id === selectedSessionId || undefined}
               onClick={() => selectSession(session.id)}
-              style={{
-                padding: "0.5rem",
-                borderRadius: "4px",
-                cursor: "pointer",
-                marginBottom: "0.25rem",
-                background: session.id === selectedSessionId ? "var(--accent-bg)" : "transparent",
-                border:
-                  session.id === selectedSessionId
-                    ? "1px solid var(--accent-border)"
-                    : "1px solid transparent",
-              }}
             >
               Conversation started {formatTime(session.created_at)}
-            </div>
+            </button>
           ))}
         </aside>
 
-        {/* Conversation panel */}
-        <section style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <section className="chat-conversation">
           {!selectedSessionId && (
-            <div style={{ margin: "auto", color: "var(--text)" }}>
+            <div className="chat-empty">
               <p>Select a conversation, or start a new chat.</p>
             </div>
           )}
 
           {selectedSessionId && (
             <>
-              <div style={{ flex: 1, overflowY: "auto", padding: "1rem 1.5rem" }}>
-                {isLoadingMessages && <p>Loading messages...</p>}
-                {messagesError && <p style={{ color: "crimson" }}>{messagesError}</p>}
+              <div className="message-list" aria-live="polite">
+                {isLoadingMessages && <p className="workspace-subtitle">Loading messages…</p>}
+                {messagesError && (
+                  <p className="form-error" role="alert">
+                    {messagesError}
+                  </p>
+                )}
                 {!isLoadingMessages && !messagesError && messages.length === 0 && (
-                  <p>Ask a question about this paper.</p>
+                  <p className="workspace-subtitle">Ask a question about this paper.</p>
                 )}
 
                 {messages.map((message) => (
                   <div
                     key={message.id}
-                    style={{
-                      display: "flex",
-                      justifyContent: message.role === "user" ? "flex-end" : "flex-start",
-                      marginBottom: "0.75rem",
-                    }}
+                    className={
+                      message.role === "user"
+                        ? "message-row message-row--user"
+                        : "message-row message-row--assistant"
+                    }
                   >
-                    <div
-                      style={{
-                        maxWidth: "70%",
-                        padding: "0.6rem 0.9rem",
-                        borderRadius: "8px",
-                        background: message.role === "user" ? "var(--accent-bg)" : "var(--code-bg)",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                        textAlign: "left",
-                      }}
-                    >
-                      {message.content}
-                    </div>
+                    <div className="message-bubble">{message.content}</div>
                   </div>
                 ))}
                 <div ref={messagesEndRef} />
               </div>
 
-              <form
-                onSubmit={handleSend}
-                style={{
-                  borderTop: "1px solid var(--border)",
-                  padding: "0.75rem 1.5rem",
-                  display: "flex",
-                  gap: "0.5rem",
-                }}
-              >
+              <form onSubmit={handleSend} className="composer">
+                <label className="visually-hidden" htmlFor="chat-composer">
+                  Ask a question about this document
+                </label>
                 <textarea
+                  id="chat-composer"
+                  className="composer__input"
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   onKeyDown={handleComposerKeyDown}
-                  placeholder="Ask a question..."
+                  placeholder="Ask anything about this document…"
                   rows={1}
                   disabled={isSending}
-                  style={{ flex: 1, resize: "none", padding: "0.5rem" }}
                 />
-                <button type="submit" disabled={isSending || !question.trim()}>
-                  {isSending ? "Sending..." : "Send"}
-                </button>
+                <Button
+                  type="submit"
+                  isLoading={isSending}
+                  disabled={!question.trim()}
+                >
+                  {isSending ? "Sending…" : "Send"}
+                </Button>
               </form>
               {sendError && (
-                <p style={{ color: "crimson", padding: "0 1.5rem 0.5rem" }}>{sendError}</p>
+                <p className="form-error" role="alert" style={{ padding: "0 var(--space-6) var(--space-3)" }}>
+                  {sendError}
+                </p>
               )}
             </>
           )}
